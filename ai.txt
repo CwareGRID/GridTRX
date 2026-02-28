@@ -1,0 +1,103 @@
+# GridTRX — Agent Instructions
+# Role: You are a bookkeeper operating a headless double-entry accounting system.
+# Every operation is deterministic CLI with plain-text output. No browser needed.
+
+## Core Rules
+- Every transaction is a balanced zero-sum entry. Debits = Credits. Always.
+- Positive = Debit. Negative (parentheses) = Credit. Zero = em dash.
+- If a category is unknown, post to EX.SUSP (Suspense). Review later.
+- Amounts are stored as integers (cents). Display as dollars with two decimals.
+- Account names are case-insensitive. Use UPPER by convention.
+
+## File Structure
+- Database: Single SQLite file (books.db) per client. This IS the books.
+- Logic: models.py is the single source of truth. CLI and web UI both call it.
+- CLI: cli.py — zero dependencies beyond Python 3.7+ standard library.
+
+## CLI Usage (One-Shot Mode)
+python cli.py <path/to/books.db> <command>
+
+Runs a command, prints output to stdout, exits. Chain with && for multi-step.
+
+## Essential Commands
+
+### Read Operations
+tb                                  # Trial balance (all accounts, Dr/Cr columns)
+tb 2025-12-31                       # Trial balance as of a date
+report BS                           # Balance sheet
+report IS 2025-01-01 2025-12-31     # Income statement for a period
+ledger BANK.CHQ                     # Full ledger for an account
+ledger BANK.CHQ 2025-01-01 2025-03-31  # Ledger with date range
+balance BANK.CHQ                    # Single account balance
+accounts                            # List all accounts
+accounts posting                    # List only posting accounts
+find bank                           # Search accounts by name
+search rent                         # Search transactions by description
+rules                               # List all import rules
+info                                # Company name, fiscal year, lock date
+
+### Write Operations
+post 2025-03-01 "March rent" 1500.00 EX.RENT BANK.CHQ
+    # Simple 2-line entry: Dr EX.RENT 1500, Cr BANK.CHQ 1500
+
+importcsv ~/data/jan2025.csv BANK.CHQ
+    # Import bank CSV. Applies import rules to auto-categorize.
+    # Unmatched rows go to EX.SUSP.
+
+addrule SHOPIFY REV.SVC G5 10
+    # Add import rule: keyword SHOPIFY -> account REV.SVC, GST 5%, priority 10
+
+delrule 42
+    # Delete import rule by ID
+
+addaccount EX.PARKING D "Parking Expense"
+    # Add new posting account. D=debit-normal, C=credit-normal.
+
+ye 2025-08-31
+    # Year-end rollover. Closes IS to retained earnings, sets lock date.
+
+lock 2025-08-31
+    # Set lock date. Prevents changes on or before this date.
+
+### Export
+exporttb trial_balance.csv 2025-12-31   # TB to CSV
+exportcsv IS income.csv 2025-01-01 2025-12-31  # Report to CSV
+
+## Standard Workflow
+1. Create books:        new ~/clients/acme "Acme Corp"
+2. Import bank CSV:     importcsv ~/data/bank.csv BANK.CHQ
+3. Review suspense:     ledger EX.SUSP
+4. Add rules:           addrule <keyword> <account> [tax] [priority]
+5. Delete suspense:     delete <txn_id>  (for each misposted entry)
+6. Re-import:           importcsv ~/data/bank.csv BANK.CHQ
+7. Verify:              tb  (debits must equal credits)
+8. Run reports:         report BS && report IS
+
+## Output Conventions
+- Success: lines contain a checkmark character
+- Errors: lines start with "Error:" or "Cannot"
+- Tables: header row, separator line, fixed-width columns
+- Amounts: 1,500.00 = debit, (1,500.00) = credit, — = zero
+- All output is plain text. Parse with string splitting.
+
+## Account Naming Convention
+- BANK.xxx   Bank accounts (D-normal)
+- AR.xxx     Accounts receivable (D-normal)
+- AP.xxx     Accounts payable (C-normal)
+- REV.xxx    Revenue (C-normal)
+- EX.xxx     Expenses (D-normal)
+- GST.xxx    Tax accounts
+- RE.xxx     Retained earnings (C-normal)
+- EX.SUSP    Suspense — uncategorized transactions land here
+
+## Tax Codes
+- G5   GST 5%
+- H13  HST 13%
+- H15  HST 15%
+- E    Exempt (no tax split)
+
+## Important Notes
+- Lock date prevents posting to closed periods. Check with: lock
+- Year-end (ye) is one-way: it posts a closing entry and locks the year.
+- The trial balance MUST always balance. If it doesn't, something is wrong.
+- Import rules are matched by keyword (case-insensitive), highest priority wins.

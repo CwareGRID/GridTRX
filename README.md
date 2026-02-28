@@ -127,6 +127,29 @@ Opens at `http://localhost:5000`. Same database, same data. Features include:
 - Reconciliation marking
 - Dark mode
 
+## MCP Server (AI Agent Integration)
+
+GridTRX includes an MCP server for structured AI agent access. Instead of parsing CLI text output, agents get typed JSON responses from 15 tools (10 read, 5 write) that wrap `models.py` directly.
+
+```bash
+pip install mcp
+```
+
+Add to your Claude Desktop config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "gridtrx": {
+      "command": "python",
+      "args": ["/path/to/mcp_server.py"]
+    }
+  }
+}
+```
+
+Every tool takes `db_path` as its first parameter, so the agent can work with any client's books.
+
 ## Architecture
 
 ```

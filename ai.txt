@@ -101,3 +101,15 @@ exportcsv IS income.csv 2025-01-01 2025-12-31  # Report to CSV
 - Year-end (ye) is one-way: it posts a closing entry and locks the year.
 - The trial balance MUST always balance. If it doesn't, something is wrong.
 - Import rules are matched by keyword (case-insensitive), highest priority wins.
+
+## MCP Server (Structured AI Agent Access)
+pip install mcp
+python mcp_server.py              # stdio transport (for Claude Desktop / Claude Code)
+
+The MCP server exposes 15 typed tools (10 read, 5 write) that wrap models.py directly.
+No shell parsing needed — agents get structured JSON responses.
+
+Add to Claude Desktop config (claude_desktop_config.json):
+  "gridtrx": {"command": "python", "args": ["/path/to/mcp_server.py"]}
+
+Every tool takes db_path as its first parameter (path to a books.db file).

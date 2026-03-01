@@ -23,10 +23,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import models
 
 def _check_workspace(path):
-    """Enforce GRIDTRX_WORKSPACE boundary if set. Returns True if allowed."""
+    """Enforce GRIDTRX_WORKSPACE boundary. Refuses to operate if unset."""
     ws = os.environ.get('GRIDTRX_WORKSPACE', '')
     if not ws:
-        return True
+        print("  Error: GRIDTRX_WORKSPACE environment variable is not set.")
+        print("  Set it to the directory containing your client books, e.g.:")
+        print("    export GRIDTRX_WORKSPACE=~/clients")
+        return False
     ws = os.path.realpath(os.path.expanduser(ws))
     resolved = os.path.realpath(os.path.expanduser(path))
     if not resolved.startswith(ws + os.sep) and resolved != ws:

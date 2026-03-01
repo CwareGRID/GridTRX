@@ -22,6 +22,18 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import models
 
+def _check_workspace(path):
+    """Enforce GRIDTRX_WORKSPACE boundary if set. Returns True if allowed."""
+    ws = os.environ.get('GRIDTRX_WORKSPACE', '')
+    if not ws:
+        return True
+    ws = os.path.realpath(os.path.expanduser(ws))
+    resolved = os.path.realpath(os.path.expanduser(path))
+    if not resolved.startswith(ws + os.sep) and resolved != ws:
+        print(f"  Access denied: '{path}' is outside the workspace ({ws}).")
+        return False
+    return True
+
 # ─── Formatting helpers ──────────────────────────────────────────
 
 def fmt(cents):
@@ -132,6 +144,8 @@ class GridCLI(cmd.Cmd):
 
     def set_books(self, path):
         """Open a books.db file."""
+        if not _check_workspace(path):
+            return False
         if not os.path.exists(path):
             print(f"  File not found: {path}")
             return False
@@ -280,6 +294,8 @@ class GridCLI(cmd.Cmd):
             print("  You can also point to a folder that contains books.db.")
             return
         path = os.path.expanduser(arg)
+        if not _check_workspace(path):
+            return
         if os.path.isdir(path):
             # Check for books.db inside
             db = os.path.join(path, 'books.db')
@@ -387,6 +403,9 @@ class GridCLI(cmd.Cmd):
 
         folder = os.path.expanduser(parts[0])
         folder = os.path.abspath(folder)
+
+        if not _check_workspace(folder):
+            return
 
         # Company name: use arg or derive from folder name
         if len(parts) > 1:

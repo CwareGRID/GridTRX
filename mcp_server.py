@@ -2,13 +2,13 @@
 GridTRX MCP Server — structured AI agent interface to the accounting engine.
 
 Wraps models.py functions as MCP tools. Every tool takes db_path as its first
-parameter. If the GRIDTRX_WORKSPACE environment variable is set, db_path must
-resolve to a location inside that directory (prevents arbitrary file access).
+parameter. The GRIDTRX_WORKSPACE environment variable must be set to the
+directory containing client books.db files — the server will refuse to start
+without it, and rejects any db_path outside that directory.
 
 Usage:
     pip install mcp
-    GRIDTRX_WORKSPACE=~/clients python mcp_server.py   # locked to workspace
-    python mcp_server.py                                # unrestricted (direct use)
+    GRIDTRX_WORKSPACE=~/clients python mcp_server.py
 """
 import sys, os, csv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,20 +23,26 @@ _initialized_db = None
 _workspace = None
 
 def _get_workspace():
-    """Return the resolved workspace path, or None if unrestricted."""
+    """Return the resolved workspace path. Raises if GRIDTRX_WORKSPACE is not set."""
     global _workspace
     if _workspace is None:
         ws = os.environ.get("GRIDTRX_WORKSPACE", "")
-        _workspace = os.path.realpath(os.path.expanduser(ws)) if ws else ""
-    return _workspace or None
+        if not ws:
+            raise RuntimeError(
+                "GRIDTRX_WORKSPACE environment variable is not set. "
+                "Set it to the directory containing client books.db files. "
+                "Example: GRIDTRX_WORKSPACE=~/clients python mcp_server.py"
+            )
+        _workspace = os.path.realpath(os.path.expanduser(ws))
+    return _workspace
 
 def _init(db_path: str):
     """Initialize database connection, only re-init if path changes.
-    Enforces workspace boundary when GRIDTRX_WORKSPACE is set."""
+    Enforces workspace boundary — db_path must be inside GRIDTRX_WORKSPACE."""
     global _initialized_db
     resolved = os.path.realpath(os.path.expanduser(db_path))
     ws = _get_workspace()
-    if ws and not resolved.startswith(ws + os.sep) and resolved != ws:
+    if not resolved.startswith(ws + os.sep) and resolved != ws:
         raise ValueError(
             f"Access denied: '{db_path}' is outside the workspace ({ws}). "
             f"Set GRIDTRX_WORKSPACE to change the allowed directory."

@@ -1,10 +1,19 @@
 ---
 name: gridtrx
-description: Headless double-entry accounting engine. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. CLI requires Python 3.7+ standard library only. MCP server requires the 'mcp' package. All data stays in a single local SQLite file.
+description: Headless double-entry accounting engine. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. All data stays in a single local SQLite file.
 requires_tools:
   - exec
   - read
   - write
+metadata:
+  openclaw:
+    requires:
+      env:
+        - GRIDTRX_WORKSPACE
+      bins:
+        - python3
+        - pip
+    primaryEnv: GRIDTRX_WORKSPACE
 ---
 
 # Skill: GridTRX Accounting
@@ -17,8 +26,8 @@ Use this skill when the user asks you to "do the books," "categorize expenses," 
 
 GridTRX has two interfaces to the same engine (`models.py` → `books.db`):
 
-1. **MCP Server (preferred)** — Structured JSON tools. No text parsing. Requires `pip install mcp` (the only external dependency).
-2. **CLI fallback** — One-shot shell commands via `python cli.py`. Python 3.7+ standard library only.
+1. **MCP Server (preferred)** — Structured JSON tools. No text parsing. Requires Python 3.7+ and `pip install mcp`.
+2. **CLI fallback** — One-shot shell commands via `python cli.py`. Requires Python 3.7+ (standard library only).
 
 Use MCP when available. Fall back to CLI otherwise.
 
@@ -35,15 +44,15 @@ Add to the agent's MCP config with `GRIDTRX_WORKSPACE` set to the user's client 
 }
 ```
 
-The MCP server enforces this boundary at runtime — any `db_path` outside the workspace is rejected with an access error. Every MCP tool takes `db_path` as its first parameter, which must resolve to a `books.db` file inside the workspace.
+`GRIDTRX_WORKSPACE` is mandatory — the MCP server will refuse to start without it. Any `db_path` outside the workspace is rejected at runtime. Every MCP tool takes `db_path` as its first parameter, which must resolve to a `books.db` file inside the workspace.
 
 ### CLI Usage
 
 ```
-python cli.py /path/to/books.db <command>
+GRIDTRX_WORKSPACE=/path/to/clients python cli.py /path/to/clients/acme/books.db <command>
 ```
 
-Runs one command, prints plain text to stdout, exits. The path must point to a `books.db` file within the user's GridTRX workspace.
+Runs one command, prints plain text to stdout, exits. When `GRIDTRX_WORKSPACE` is set, the CLI enforces the same workspace boundary as the MCP server — paths outside the workspace are rejected.
 
 ## Inputs needed
 
@@ -167,7 +176,7 @@ There is no bulk undo. Deletions are individual and respect the lock date — yo
 
 - **NEVER GUESS CATEGORIES.** If a transaction description is ambiguous, let it go to `EX.SUSP` and ask the user. Do not assume "AMAZON" is office supplies — it could be inventory, personal, or cost of sales.
 - **NEVER MODIFY books.db DIRECTLY.** All writes go through `cli.py` commands or MCP tools. Never use file tools to read or write the SQLite database.
-- **STAY IN THE WORKSPACE.** Only operate on `books.db` files within the user's GridTRX workspace. The MCP server enforces this — `db_path` values outside `GRIDTRX_WORKSPACE` are rejected at runtime.
+- **STAY IN THE WORKSPACE.** Only operate on `books.db` files within the user's GridTRX workspace. Both the MCP server and CLI enforce this when `GRIDTRX_WORKSPACE` is set — the MCP server will not start without it, and both interfaces reject any path outside the workspace.
 - **NO OUTBOUND NETWORK REQUESTS.** GridTRX processes data locally. It does not phone home, call APIs, or transmit data. Do not attempt to "verify" transactions against external services.
 - **RESPECT THE LOCK DATE.** Before importing historical data, check the lock date with `get_info()` or `lock`. You cannot post, edit, or delete transactions on or before the lock date.
 - **PRESERVE RAW OUTPUT.** When presenting financial data to the user, use the exact numbers from GridTRX. Do not round, reformat, or flip signs. Positive = Debit. Parentheses = Credit.

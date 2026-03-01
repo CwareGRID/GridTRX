@@ -281,6 +281,16 @@ def list_reports(db_path: str) -> list[dict]:
 
 
 @mcp.tool()
+def update_report(db_path: str, report_name: str, description: str) -> dict:
+    """Update a report's description."""
+    _init(db_path)
+    rpt = models.find_report_by_name(report_name)
+    if not rpt:
+        raise ValueError(f"Report not found: {report_name}")
+    return models.update_report(rpt['id'], description=description)
+
+
+@mcp.tool()
 def list_rules(db_path: str) -> list[dict]:
     """List all import rules for CSV auto-categorization."""
     _init(db_path)

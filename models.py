@@ -150,6 +150,18 @@ def add_report(name, description='', sort_order=0):
             (name, description, sort_order))
         return cur.lastrowid
 
+def update_report(report_id, description=None, sort_order=None):
+    """Update a report's description and/or sort order."""
+    with get_db() as db:
+        rpt = db.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        if not rpt:
+            raise ValueError(f"Report ID {report_id} not found.")
+        new_desc = description if description is not None else rpt['description']
+        new_sort = sort_order if sort_order is not None else rpt['sort_order']
+        db.execute("UPDATE reports SET description=?, sort_order=? WHERE id=?",
+                   (new_desc, new_sort, report_id))
+        return dict(db.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone())
+
 # ─── Accounts ─────────────────────────────────────────────────────
 def get_account(account_id):
     with get_db() as db:
@@ -397,6 +409,15 @@ def update_transaction(txn_id, date_str, reference, description, lines):
     if lock and date_str <= lock:
         raise ValueError(f"Date {date_str} is on or before the lock date ({lock}).")
     with get_db() as db:
+        # Block posting to total accounts
+        for line in lines:
+            acct_id = line[0]
+            acct = db.execute("SELECT name, account_type FROM accounts WHERE id=?",
+                              (acct_id,)).fetchone()
+            if acct and acct['account_type'] == 'total':
+                raise ValueError(
+                    f"Cannot post to '{acct['name']}' — it is a total account. "
+                    "Post to a detail account instead.")
         db.execute("UPDATE transactions SET date=?, reference=?, description=? WHERE id=?",
             (date_str, reference, description, txn_id))
         db.execute("DELETE FROM lines WHERE transaction_id=?", (txn_id,))

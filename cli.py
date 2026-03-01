@@ -1302,6 +1302,58 @@ class GridCLI(cmd.Cmd):
         rows = [(str(r['id']), r['name'], r['description']) for r in reports]
         table(['ID', 'Name', 'Description'], rows)
 
+    def do_editreport(self, arg):
+        """Edit a report's description.
+        Usage: editreport <name> --desc "New Description"
+
+        Examples:
+          editreport BS --desc "Balance Sheet - TecToc Energy Ltd"
+          editreport IS --desc "Income Statement 2026"
+        """
+        if not self._require_books():
+            return
+
+        parts = _split_args(arg)
+        if not parts:
+            print('  Usage: editreport <name> --desc "New Description"')
+            print('  Example: editreport BS --desc "Balance Sheet - TecToc Energy Ltd"')
+            return
+
+        rpt_name = parts[0]
+        rpt = models.find_report_by_name(rpt_name)
+        if not rpt:
+            print(f"  Report not found: '{rpt_name}'")
+            reports = models.get_reports()
+            if reports:
+                print(f"  Available: {', '.join(r['name'] for r in reports)}")
+            return
+
+        # Parse --desc flag
+        new_desc = None
+        i = 1
+        while i < len(parts):
+            if parts[i] == '--desc' and i + 1 < len(parts):
+                new_desc = parts[i + 1]
+                i += 2
+            else:
+                print(f"  Unknown option: '{parts[i]}'")
+                print('  Use --desc "text" to change description')
+                return
+
+        if new_desc is None:
+            print("  Nothing to change. Specify --desc.")
+            print(f"  Current description: {rpt['description']}")
+            return
+
+        try:
+            old_desc = rpt['description']
+            models.update_report(rpt['id'], description=new_desc)
+            print(f"  Report updated: {rpt['name']}")
+            print(f"    Old: {old_desc}")
+            print(f"    New: {new_desc}")
+        except Exception as e:
+            print(f"  Error updating report: {e}")
+
     def do_report(self, arg):
         """Run a report. Usage: report <name> [from_date] [to_date]"""
         if not self._require_books():

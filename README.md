@@ -143,13 +143,14 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
   "mcpServers": {
     "gridtrx": {
       "command": "python",
-      "args": ["/path/to/mcp_server.py"]
+      "args": ["/path/to/mcp_server.py"],
+      "env": {"GRIDTRX_WORKSPACE": "/path/to/clients"}
     }
   }
 }
 ```
 
-Every tool takes `db_path` as its first parameter, so the agent can work with any client's books.
+Every tool takes `db_path` as its first parameter. Set `GRIDTRX_WORKSPACE` to restrict database access to a specific directory (recommended). Without it, the server operates unrestricted.
 
 ## Architecture
 
@@ -165,6 +166,12 @@ templates/        ← Jinja2 templates for browser UI
 - Amounts are stored as integers (cents). No floating-point rounding issues.
 - Transactions are always balanced (sum of all lines = 0).
 - Reports use a total-to chain: posting accounts roll up through up to 6 levels of totals.
+
+## OpenClaw Skill
+
+GridTRX is available as an [OpenClaw](https://clawhub.ai) skill. Any OpenClaw agent can install it and immediately handle bookkeeping tasks — importing bank data, categorizing transactions, running reports.
+
+See [SKILL.md](SKILL.md) for the full skill definition.
 
 ## Requirements
 

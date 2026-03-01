@@ -1,6 +1,6 @@
 ---
 name: gridtrx
-description: Headless double-entry accounting engine. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. All data stays in a single local SQLite file.
+description: Headless double-entry accounting engine for AI agents. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. All data stays in a single local SQLite file.
 requires_tools:
   - exec
   - read

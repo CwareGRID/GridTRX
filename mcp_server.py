@@ -36,6 +36,16 @@ def _get_workspace():
         _workspace = os.path.realpath(os.path.expanduser(ws))
     return _workspace
 
+def _check_path(file_path: str, label: str = "path"):
+    """Enforce workspace boundary on any file path (imports, exports, etc.)."""
+    resolved = os.path.realpath(os.path.expanduser(file_path))
+    ws = _get_workspace()
+    if not resolved.startswith(ws + os.sep) and resolved != ws:
+        raise ValueError(
+            f"Access denied: {label} '{file_path}' is outside the workspace ({ws})."
+        )
+    return resolved
+
 def _init(db_path: str):
     """Initialize database connection, only re-init if path changes.
     Enforces workspace boundary — db_path must be inside GRIDTRX_WORKSPACE."""
@@ -396,7 +406,7 @@ def import_csv(db_path: str, csv_path: str, bank_account: str) -> dict:
     """
     _init(db_path)
 
-    csv_path = os.path.expanduser(csv_path)
+    csv_path = _check_path(csv_path, "csv_path")
     if not os.path.exists(csv_path):
         raise ValueError(f"File not found: {csv_path}")
 
@@ -473,7 +483,7 @@ def import_ofx(db_path: str, ofx_path: str, bank_account: str) -> dict:
     """
     _init(db_path)
 
-    ofx_path = os.path.expanduser(ofx_path)
+    ofx_path = _check_path(ofx_path, "ofx_path")
     if not os.path.exists(ofx_path):
         raise ValueError(f"File not found: {ofx_path}")
 

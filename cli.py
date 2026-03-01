@@ -1048,6 +1048,8 @@ class GridCLI(cmd.Cmd):
             return
 
         csv_path = os.path.expanduser(parts[0])
+        if not _check_workspace(csv_path):
+            return
         if not os.path.exists(csv_path):
             print(f"  File not found: {csv_path}")
             print("  Check the file path and try again.")
@@ -1181,6 +1183,8 @@ class GridCLI(cmd.Cmd):
             return
 
         ofx_path = os.path.expanduser(parts[0])
+        if not _check_workspace(ofx_path):
+            return
         if not os.path.exists(ofx_path):
             print(f"  File not found: {ofx_path}")
             return
@@ -1436,6 +1440,9 @@ class GridCLI(cmd.Cmd):
         if not filename:
             filename = f"{rpt['name']}.csv"
 
+        if not _check_workspace(os.path.abspath(filename)):
+            return
+
         if not date_from:
             date_from = rpt.get('period_begin', '') or None
         if not date_to:
@@ -1500,6 +1507,9 @@ class GridCLI(cmd.Cmd):
 
         if not filename:
             filename = 'trial_balance.csv'
+
+        if not _check_workspace(os.path.abspath(filename)):
+            return
 
         with models.get_db() as db:
             accounts = db.execute("SELECT * FROM accounts WHERE account_type='posting' ORDER BY name").fetchall()

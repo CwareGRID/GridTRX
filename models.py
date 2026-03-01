@@ -1,9 +1,10 @@
 """
-Grid — Data Model & Database Layer (v2)
+GridTRX — Data Model & Database Layer (v2)
 NV-style architecture: reports contain ordered items.
 Items can be posting accounts, total accounts, labels, or separators.
 6 total-to columns enable flexible report arithmetic.
 All amounts stored as integers (cents). Double-entry enforced.
+One data layer — CLI, MCP server, and browser UI all call these functions.
 """
 import sqlite3, os
 from datetime import datetime, date

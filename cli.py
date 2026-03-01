@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Grid CLI — Command line interface for Grid bookkeeping.
-For humans and AI agents. Calls models.py directly.
+GridTRX CLI — Command line interface for GridTRX accounting.
+For AI agents and human accountants. Calls models.py directly.
 
-Usage:
+Three modes:
     python cli.py                         # interactive mode, pick a client
     python cli.py /path/to/books.db       # open specific books
     python cli.py /path/to/books.db tb    # one-shot: run command and exit

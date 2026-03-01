@@ -1,12 +1,13 @@
 ---
 name: gridtrx
-description: Headless double-entry accounting engine for AI agents. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. All data stays in a single local SQLite file.
+description: Double-entry, full-cycle accounting suite built for AI agents. Converts bank CSVs, OFX, and QBO files into balanced, auditable books — balance sheet, income statement, general ledger, trial balance. All data stays in a single local SQLite file.
+homepage: https://github.com/gridtrx/gridtrx
 requires_tools:
   - exec
   - read
   - write
 metadata:
-  openclaw:
+  clawdbot:
     requires:
       env:
         - GRIDTRX_WORKSPACE
@@ -14,22 +15,27 @@ metadata:
         - python3
         - pip
     primaryEnv: GRIDTRX_WORKSPACE
+    files:
+      - "*.py"
 ---
 
 # Skill: GridTRX Accounting
 
 ## What it does
 
-Use this skill when the user asks you to "do the books," "categorize expenses," "import bank transactions," "run a balance sheet," or any bookkeeping task. GridTRX is a double-entry accounting engine driven through Python commands. Every transaction balances. Every amount is deterministic. All data is local — no cloud services, no external APIs.
+Use this skill when the user asks you to "do the books," "categorize expenses," "import bank transactions," "run a balance sheet," or any bookkeeping task. GridTRX is a full-cycle double-entry accounting engine. You prompt in plain English, and the agent completes the books correctly. Every transaction balances. Every amount is deterministic. All data is local — no cloud services, no external APIs.
+
+GridTRX produces a full set of auditable books: balance sheet, income statement, general ledger, trial balance, adjusting journal entries, retained earnings rollforward. Reports are exportable to CSV and PDF for any time period.
 
 ## Architecture
 
-GridTRX has two interfaces to the same engine (`models.py` → `books.db`):
+GridTRX has three interfaces to the same engine (`models.py` → `books.db`):
 
-1. **MCP Server (preferred)** — Structured JSON tools. No text parsing. Requires Python 3.7+ and `pip install mcp`.
-2. **CLI fallback** — One-shot shell commands via `python cli.py`. Requires Python 3.7+ (standard library only).
+1. **MCP Server (preferred for agents)** — Structured JSON tools. 19 tools (12 read, 7 write) wrapping `models.py` directly. No text parsing, typed parameters, deterministic output. Requires `pip install mcp`.
+2. **CLI (fallback for agents, power users)** — One-shot shell commands via `python cli.py`. Zero dependencies beyond Python 3.7+ standard library. Any terminal-based agent can drive it via subprocess.
+3. **Browser UI (for humans)** — Flask web interface at `localhost:5000` via `python run.py`. Ledger browsing, report viewer with drill-down, comparative reports up to 13 columns, bank import with rule preview, reconciliation marking, dark mode.
 
-Use MCP when available. Fall back to CLI otherwise.
+All three hit the same `models.py` data layer. Nothing is out of sync. Use MCP when available. Fall back to CLI otherwise. The browser UI is for human review.
 
 ### MCP Setup
 
@@ -66,9 +72,10 @@ Runs one command, prints plain text to stdout, exits. When `GRIDTRX_WORKSPACE` i
 - **Sign convention:** Positive = Debit. Parentheses `(1,500.00)` = Credit. `—` = Zero.
 - **Amounts:** Stored as integer cents internally. Displayed as dollars with two decimals.
 - **Account names:** Case-insensitive, UPPER by convention. Common prefixes: `BANK.` `EX.` `REV.` `AR.` `AP.` `GST.` `RE.`
-- **EX.SUSP (Suspense):** Where unrecognized transactions land. This is the triage queue.
+- **EX.SUSP (Suspense):** Where unrecognized transactions land. This is the triage queue. Tell the AI what the suspense items are and it will clear them. Or clear them yourself through the GUI.
 - **Import rules:** Keyword → account mappings. Case-insensitive match, highest priority wins. Optional tax code splits the amount into net + tax automatically.
 - **Lock date:** Prevents changes to closed periods. Check before importing historical data.
+- **Architecture:** Each client is one SQLite file. Copy it, back it up, email it. One data layer (`models.py`) — CLI, MCP server, and browser UI all call the same functions.
 
 ## Workflow
 
@@ -163,7 +170,7 @@ There is no bulk undo. Deletions are individual and respect the lock date — yo
 | Tool | Purpose |
 |------|---------|
 | `post_transaction(db_path, date, description, amount, debit_account, credit_account)` | Post a simple 2-line entry |
-| `delete_transaction(db_path, txn_id)` | Delete a transaction |
+| `delete_transaction(db_path, txn_id)` | Delete a transaction (respects lock date) |
 | `add_account(db_path, name, normal_balance, description?)` | Add a posting account |
 | `add_rule(db_path, keyword, account_name, tax_code?, priority?)` | Add an import rule |
 | `delete_rule(db_path, rule_id)` | Delete an import rule |

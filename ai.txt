@@ -1,6 +1,7 @@
 # GridTRX — Agent Instructions
-# Role: You are a bookkeeper operating a headless double-entry accounting system.
-# Every operation is deterministic CLI with plain-text output. No browser needed.
+# Role: You are a bookkeeper operating a full-cycle double-entry accounting system.
+# GridTRX is built for AI agents first, human accountants second.
+# Every operation is deterministic. All data is local — no cloud, no APIs.
 
 ## Core Rules
 - Every transaction is a balanced zero-sum entry. Debits = Credits. Always.
@@ -9,10 +10,13 @@
 - Amounts are stored as integers (cents). Display as dollars with two decimals.
 - Account names are case-insensitive. Use UPPER by convention.
 
-## File Structure
-- Database: Single SQLite file (books.db) per client. This IS the books.
-- Logic: models.py is the single source of truth. CLI and web UI both call it.
-- CLI: cli.py — zero dependencies beyond Python 3.7+ standard library.
+## Architecture
+- Database: Single SQLite file (books.db) per client. Copy it, back it up, email it.
+- Logic: models.py is the single source of truth. All three interfaces call it.
+- Three interfaces, one engine:
+  1. MCP Server (preferred) — Structured JSON tools, typed parameters, deterministic output.
+  2. CLI (fallback) — One-shot shell commands. Zero dependencies beyond Python 3.7+.
+  3. Browser UI (for humans) — Flask at localhost:5000 via run.py. Same database, same data.
 
 ## CLI Usage (One-Shot Mode)
 python cli.py <path/to/books.db> <command>
@@ -39,6 +43,9 @@ info                                # Company name, fiscal year, lock date
 ### Write Operations
 post 2025-03-01 "March rent" 1500.00 EX.RENT BANK.CHQ
     # Simple 2-line entry: Dr EX.RENT 1500, Cr BANK.CHQ 1500
+
+postx 2025-03-01 "Compound entry"
+    # Multi-line transaction. Enter lines interactively.
 
 importcsv ~/data/jan2025.csv BANK.CHQ
     # Import bank CSV. Applies import rules to auto-categorize.
@@ -115,7 +122,7 @@ Both the MCP server and CLI enforce this boundary — paths outside the workspac
 pip install mcp
 GRIDTRX_WORKSPACE=~/clients python mcp_server.py
 
-The MCP server exposes 19 typed tools that wrap models.py directly.
+The MCP server exposes 19 typed tools (12 read, 7 write) that wrap models.py directly.
 No shell parsing needed — agents get structured JSON responses.
 GRIDTRX_WORKSPACE is mandatory — the server will not start without it.
 

@@ -1,6 +1,6 @@
 ---
 name: gridtrx
-description: Headless double-entry accounting engine. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. Zero external dependencies. Fully sandboxed in a single SQLite file.
+description: Headless double-entry accounting engine. Converts bank CSVs and OFX/QBO files into balanced, auditable ledgers. CLI requires Python 3.7+ standard library only. MCP server requires the 'mcp' package. All data stays in a single local SQLite file.
 requires_tools:
   - exec
   - read
@@ -11,25 +11,31 @@ requires_tools:
 
 ## What it does
 
-Use this skill when the user asks you to "do the books," "categorize expenses," "import bank transactions," "run a balance sheet," or any bookkeeping task. GridTRX is a double-entry accounting engine driven entirely through Python commands. Every transaction balances. Every amount is deterministic. No cloud, no network, no guessing.
+Use this skill when the user asks you to "do the books," "categorize expenses," "import bank transactions," "run a balance sheet," or any bookkeeping task. GridTRX is a double-entry accounting engine driven through Python commands. Every transaction balances. Every amount is deterministic. All data is local — no cloud services, no external APIs.
 
 ## Architecture
 
 GridTRX has two interfaces to the same engine (`models.py` → `books.db`):
 
-1. **MCP Server (preferred)** — Structured JSON tools. No text parsing. Requires `pip install mcp`.
-2. **CLI fallback** — One-shot shell commands via `python cli.py`. Zero dependencies.
+1. **MCP Server (preferred)** — Structured JSON tools. No text parsing. Requires `pip install mcp` (the only external dependency).
+2. **CLI fallback** — One-shot shell commands via `python cli.py`. Python 3.7+ standard library only.
 
-Use MCP when available. Fall back to CLI when MCP is not connected.
+Use MCP when available. Fall back to CLI otherwise.
 
 ### MCP Setup
 
-Add to the agent's MCP config:
+Requires: `pip install mcp`
+
+Add to the agent's MCP config with `GRIDTRX_WORKSPACE` set to the user's client folder:
 ```json
-{"command": "python", "args": ["/path/to/mcp_server.py"]}
+{
+  "command": "python",
+  "args": ["/path/to/mcp_server.py"],
+  "env": {"GRIDTRX_WORKSPACE": "/path/to/clients"}
+}
 ```
 
-Every MCP tool takes `db_path` as its first parameter (absolute path to a `books.db` file).
+The MCP server enforces this boundary at runtime — any `db_path` outside the workspace is rejected with an access error. Every MCP tool takes `db_path` as its first parameter, which must resolve to a `books.db` file inside the workspace.
 
 ### CLI Usage
 
@@ -37,7 +43,7 @@ Every MCP tool takes `db_path` as its first parameter (absolute path to a `books
 python cli.py /path/to/books.db <command>
 ```
 
-Runs one command, prints plain text to stdout, exits.
+Runs one command, prints plain text to stdout, exits. The path must point to a `books.db` file within the user's GridTRX workspace.
 
 ## Inputs needed
 
@@ -161,7 +167,8 @@ There is no bulk undo. Deletions are individual and respect the lock date — yo
 
 - **NEVER GUESS CATEGORIES.** If a transaction description is ambiguous, let it go to `EX.SUSP` and ask the user. Do not assume "AMAZON" is office supplies — it could be inventory, personal, or cost of sales.
 - **NEVER MODIFY books.db DIRECTLY.** All writes go through `cli.py` commands or MCP tools. Never use file tools to read or write the SQLite database.
-- **NEVER MAKE NETWORK REQUESTS.** GridTRX is fully offline. It does not phone home, call APIs, or transmit data. Do not attempt to "verify" transactions against external services.
+- **STAY IN THE WORKSPACE.** Only operate on `books.db` files within the user's GridTRX workspace. The MCP server enforces this — `db_path` values outside `GRIDTRX_WORKSPACE` are rejected at runtime.
+- **NO OUTBOUND NETWORK REQUESTS.** GridTRX processes data locally. It does not phone home, call APIs, or transmit data. Do not attempt to "verify" transactions against external services.
 - **RESPECT THE LOCK DATE.** Before importing historical data, check the lock date with `get_info()` or `lock`. You cannot post, edit, or delete transactions on or before the lock date.
 - **PRESERVE RAW OUTPUT.** When presenting financial data to the user, use the exact numbers from GridTRX. Do not round, reformat, or flip signs. Positive = Debit. Parentheses = Credit.
 - **TRIAL BALANCE MUST BALANCE.** After any operation, if the trial balance shows unequal debits and credits, something is wrong. Stop and investigate before proceeding.

@@ -2,11 +2,13 @@
 GridTRX MCP Server — structured AI agent interface to the accounting engine.
 
 Wraps models.py functions as MCP tools. Every tool takes db_path as its first
-parameter so the agent can work with any database file.
+parameter. If the GRIDTRX_WORKSPACE environment variable is set, db_path must
+resolve to a location inside that directory (prevents arbitrary file access).
 
 Usage:
     pip install mcp
-    python mcp_server.py          # stdio transport (for Claude Desktop / Claude Code)
+    GRIDTRX_WORKSPACE=~/clients python mcp_server.py   # locked to workspace
+    python mcp_server.py                                # unrestricted (direct use)
 """
 import sys, os, csv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -18,13 +20,30 @@ import models
 mcp = FastMCP("GridTRX", instructions="Double-entry accounting engine")
 
 _initialized_db = None
+_workspace = None
+
+def _get_workspace():
+    """Return the resolved workspace path, or None if unrestricted."""
+    global _workspace
+    if _workspace is None:
+        ws = os.environ.get("GRIDTRX_WORKSPACE", "")
+        _workspace = os.path.realpath(os.path.expanduser(ws)) if ws else ""
+    return _workspace or None
 
 def _init(db_path: str):
-    """Initialize database connection, only re-init if path changes."""
+    """Initialize database connection, only re-init if path changes.
+    Enforces workspace boundary when GRIDTRX_WORKSPACE is set."""
     global _initialized_db
-    if _initialized_db != db_path:
-        models.init_db(db_path)
-        _initialized_db = db_path
+    resolved = os.path.realpath(os.path.expanduser(db_path))
+    ws = _get_workspace()
+    if ws and not resolved.startswith(ws + os.sep) and resolved != ws:
+        raise ValueError(
+            f"Access denied: '{db_path}' is outside the workspace ({ws}). "
+            f"Set GRIDTRX_WORKSPACE to change the allowed directory."
+        )
+    if _initialized_db != resolved:
+        models.init_db(resolved)
+        _initialized_db = resolved
 
 
 def _row_to_dict(row):

@@ -5,6 +5,7 @@ Simple. Analog. Robust.
 import os
 import sys
 import json
+import re
 import shutil
 from datetime import datetime, date
 from flask import (Flask, render_template, request, redirect, url_for, 
@@ -2002,9 +2003,15 @@ def api_quick_entry(account_id):
             return jsonify({'ok': False, 'error': 'Invalid date format. Use yyyy-mm-dd (e.g. 2025-01-15)'})
         date_str = parsed_date
         
+        # AJE reference format enforcement
+        parent_rpt = models.find_report_for_account(account_id)
+        if parent_rpt and parent_rpt['name'] == 'AJE' and reference.strip():
+            if not re.match(r'^\d{2}AJE\d{2,}$', reference.strip(), re.IGNORECASE):
+                return jsonify({'ok': False, 'error': 'AJE reference must be in format xxAJEyy (e.g. 25AJE03). xx=year, yy=sequence number.'})
+
         amount = models.parse_amount(amount_str) if amount_str.strip() else 0
         this_acct = models.get_account(account_id)
-        
+
         # Flip sign for credit-normal accounts: user types positive to mean
         # "increase this account" which for a credit-normal account means a credit (negative internally)
         if this_acct['normal_balance'] == 'C' and amount != 0:

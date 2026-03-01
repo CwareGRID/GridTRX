@@ -44,6 +44,8 @@
   .dc.y { color:var(--accent); }
   .dc.n { color:var(--faint); }
 
+  .L tr.grp-break td { border-top:2px solid var(--border); }
+
   .er td { background:var(--surface-raised); border-top:2px solid var(--accent); padding:3px 4px; }
   .er input { width:100%; padding:3px 4px; border:1px solid var(--border); border-radius:2px;
     font-family:var(--mono); font-size:13px; background:var(--surface); color:var(--text); box-sizing:border-box; }
@@ -129,7 +131,7 @@
   </thead>
   <tbody>
     {% for e in entries %}
-    <tr id="txn-{{ e.txn_id }}" class="tr" data-tid="{{ e.txn_id }}" data-lid="{{ e.line_id }}" tabindex="0">
+    <tr id="txn-{{ e.txn_id }}" class="tr{% if parent_report and parent_report.name == 'AJE' and not loop.first and entries[loop.index0 - 1].reference != e.reference %} grp-break{% endif %}" data-tid="{{ e.txn_id }}" data-lid="{{ e.line_id }}" tabindex="0">
       <td>
         <form method="post" action="{{ url_for('reconcile', txn_id=e.txn_id) }}" style="display:inline">
           <input type="hidden" name="return_to" value="{{ request.url }}">
@@ -154,7 +156,7 @@
       <td></td>
       <td></td>
       <td><input type="text" name="date" id="ed" value="{{ today }}" tabindex="1" placeholder="yyyy-mm-dd" style="width:95px"></td>
-      <td><input type="text" name="reference" id="er" placeholder="" tabindex="2" style="width:70px"></td>
+      <td><input type="text" name="reference" id="er" placeholder="{% if parent_report and parent_report.name == 'AJE' %}25AJE01{% endif %}" tabindex="2" style="width:70px"></td>
       <td><input type="text" name="description" id="em" placeholder="Description..." tabindex="3"></td>
       <td><input type="text" name="amount" id="ea" class="ai" placeholder="0.00" tabindex="4"></td>
       <td></td>
@@ -819,6 +821,16 @@ async function doPost(gst, gstType) {
   const a = document.getElementById('ea').value;
   const x = document.getElementById('ex').value;
   if (!d.trim()) return;
+
+  // AJE reference format: xxAJEyy (e.g. 25AJE03)
+  if (IS_AJE && r.trim()) {
+    if (!/^\d{2}AJE\d{2,}$/i.test(r.trim())) {
+      ss('err', 'AJE reference must be in format xxAJEyy (e.g. 25AJE03). xx=year, yy=sequence number.');
+      document.getElementById('er').focus();
+      document.getElementById('er').select();
+      return;
+    }
+  }
 
   const body = new URLSearchParams({date:d, reference:r, description:m, amount:a, cross_account:x,
     gst_split:gst?'1':'0', gst_type:gstType||'purchase'});

@@ -84,7 +84,10 @@ Runs one command, prints plain text to stdout, exits. When `GRIDTRX_WORKSPACE` i
 **MCP:** No direct tool — use exec to run CLI.
 **CLI:** `python cli.py` then `new /path/to/folder "Company Name"`
 
-This creates `books.db` with a full chart of accounts (~60 posting accounts), five reports (BS, IS, AJE, TRX, RE.OFS), 60+ import rules, and four tax codes.
+This creates `books.db` with a full chart of accounts (~60 posting accounts), five reports (BS, IS, AJE, TRX, RE.OFS), 60+ import rules, and four tax codes. **Always use starter books as the base** — they include the critical perpetual retained earnings chain (IS → NI → RE.CLOSE → RE on BS, plus RE.OFS/RE.OPEN for year-end). Never build reports from scratch without this chain.
+
+After setup, run `validate` to confirm the report chain is intact:
+**CLI:** `python cli.py /path/to/books.db validate`
 
 ### Step 2: Import bank data
 

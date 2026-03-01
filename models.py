@@ -201,6 +201,10 @@ def add_report_item(report_id, item_type='account', description='', account_id=N
                     indent=0, position=None, total_to_1='', total_to_2='',
                     total_to_3='', total_to_4='', total_to_5='', total_to_6='',
                     sep_style=''):
+    if item_type == 'total' and account_id is None:
+        raise ValueError(
+            f"Total report items require an account_id (the total account that accumulates). "
+            f"Description: '{description}'. Create a total-type account first, then pass its id.")
     with get_db() as db:
         if position is None:
             row = db.execute("SELECT MAX(position) as mx FROM report_items WHERE report_id=?", (report_id,)).fetchone()
@@ -987,10 +991,167 @@ def import_rows(bank_account_id, rows):
         'posted': posted,
         'skipped': skipped,
         'to_suspense': suspense,
+        'errors': errors[:20] if errors else [],
     }
-    if errors:
-        result['errors'] = errors[:20]
     return result
+
+# ─── Report Chain Validation ──────────────────────────────────────
+def validate_report_chain():
+    """Validate the total-to chain across all reports.
+
+    Checks:
+      1. Every total report item has an account_id linked
+      2. IS chain reaches RE on the BS (NI → RE.CLOSE → RE)
+      3. RE.OFS and RE.OPEN accounts exist
+      4. BS balances (Total Assets = Total L&E)
+      5. No orphan total accounts (accounts referenced by total_to but not on any report)
+
+    Returns: list of {level: 'error'|'warning', message: str}
+    """
+    issues = []
+
+    all_items = get_all_report_items()
+    if not all_items:
+        issues.append({'level': 'error', 'message': 'No report items found. Run create_starter_books() first.'})
+        return issues
+
+    # 1. Total items without account_id
+    for it in all_items:
+        if it['item_type'] == 'total' and not it['account_id']:
+            rpt = it['report_id']
+            issues.append({'level': 'error',
+                'message': f"Total item '{it['description']}' (report {rpt}) has no account_id linked. "
+                           f"It will always show zero."})
+
+    # 2. Collect the total-to graph
+    tt_fields = ['total_to_1','total_to_2','total_to_3','total_to_4','total_to_5']
+    # Map: account_name -> set of target names
+    feeds_into = {}
+    all_acct_names = set()
+    for it in all_items:
+        name = it['acct_name'] if 'acct_name' in it.keys() else None
+        if not name:
+            continue
+        all_acct_names.add(name)
+        for ttf in tt_fields:
+            target = it[ttf] if ttf in it.keys() else ''
+            if target:
+                feeds_into.setdefault(name, set()).add(target)
+                all_acct_names.add(target)
+
+    # 3. Check IS → BS chain: need path from revenue/expense totals to RE on BS
+    bs_report = find_report_by_name('BS')
+    is_report = find_report_by_name('IS')
+
+    # Check RE.OPEN and RE.OFS exist
+    re_open = get_account_by_name('RE.OPEN')
+    re_ofs = get_account_by_name('RE.OFS')
+    if not re_open:
+        issues.append({'level': 'error',
+            'message': "RE.OPEN account missing. Required for year-end closing (ye command)."})
+    if not re_ofs:
+        issues.append({'level': 'error',
+            'message': "RE.OFS account missing. Required for perpetual retained earnings."})
+
+    # Check RE total account exists and is on BS
+    re_acct = get_account_by_name('RE')
+    if not re_acct:
+        issues.append({'level': 'error',
+            'message': "RE total account missing. Retained earnings has no accumulator on BS."})
+    elif re_acct['account_type'] != 'total':
+        issues.append({'level': 'warning',
+            'message': "RE is a posting account, not a total. It won't accumulate RE.CLOSE chain."})
+
+    # Check RE.CLOSE exists and chains to RE
+    re_close = get_account_by_name('RE.CLOSE')
+    if not re_close:
+        issues.append({'level': 'error',
+            'message': "RE.CLOSE total account missing. IS net income cannot flow to BS."})
+    elif 'RE' not in feeds_into.get('RE.CLOSE', set()):
+        issues.append({'level': 'error',
+            'message': "RE.CLOSE does not total-to RE. IS net income won't reach the BS."})
+
+    # Check NI exists and chains to RE.CLOSE
+    ni_acct = get_account_by_name('NI')
+    if not ni_acct:
+        # Check for NETINC as alternative
+        ni_acct = get_account_by_name('NETINC')
+        if not ni_acct:
+            issues.append({'level': 'error',
+                'message': "NI (or NETINC) total account missing. No net income accumulator."})
+
+    # Check that at least one IS total feeds into NI chain
+    if is_report:
+        is_items = get_report_items(is_report['id'])
+        is_totals = [it['acct_name'] for it in is_items
+                     if it['item_type'] == 'total' and it['acct_name']]
+        # Trace from each IS total to see if it reaches RE
+        def reaches(name, target, visited=None):
+            if visited is None:
+                visited = set()
+            if name in visited:
+                return False
+            visited.add(name)
+            targets = feeds_into.get(name, set())
+            if target in targets:
+                return True
+            return any(reaches(t, target, visited) for t in targets)
+
+        chain_ok = any(reaches(t, 'RE') for t in is_totals)
+        if not chain_ok:
+            issues.append({'level': 'error',
+                'message': "IS total-to chain does not reach RE on BS. "
+                           "Net income won't flow to equity. "
+                           "Need: IS totals → NI → RE.CLOSE → RE."})
+
+    # Check RE.OFS feeds into RE
+    if re_ofs and 'RE' not in feeds_into.get('RE.OFS', set()):
+        issues.append({'level': 'warning',
+            'message': "RE.OFS does not total-to RE. Year-end offset won't reach BS equity."})
+
+    # 4. Check BS balances
+    if bs_report:
+        data = compute_report_column(bs_report['id'])
+        ta_bal = tle_bal = None
+        for item, bal in data:
+            name = item.get('acct_name')
+            if name == 'TA':
+                ta_bal = bal
+            elif name == 'TLE' or name == 'TL':
+                tle_bal = bal
+        if ta_bal is not None and tle_bal is not None:
+            diff = ta_bal - tle_bal
+            if diff != 0:
+                issues.append({'level': 'error',
+                    'message': f"BS out of balance: Total Assets ({fmt_amount(ta_bal)}) != "
+                               f"Liabilities & Equity ({fmt_amount(tle_bal)}). "
+                               f"Difference: {fmt_amount(diff)}."})
+        elif ta_bal is None:
+            issues.append({'level': 'warning',
+                'message': "Cannot find TA (Total Assets) on BS to verify balance."})
+
+    # 5. Orphan total-to targets (referenced but not on any report)
+    on_report = set()
+    for it in all_items:
+        if it['acct_name']:
+            on_report.add(it['acct_name'])
+    for name, targets in feeds_into.items():
+        for t in targets:
+            if t not in on_report:
+                acct = get_account_by_name(t)
+                if not acct:
+                    issues.append({'level': 'error',
+                        'message': f"'{name}' total-to '{t}' but account '{t}' does not exist."})
+                else:
+                    issues.append({'level': 'warning',
+                        'message': f"'{name}' total-to '{t}' but '{t}' is not on any report. "
+                                   f"Balance will accumulate but never display."})
+
+    if not issues:
+        issues.append({'level': 'ok', 'message': 'Report chain is valid. BS balances.'})
+
+    return issues
+
 
 # ─── Starter Template ─────────────────────────────────────────────
 def create_starter_books(path, company_name='My Company', fiscal_ye='12-31'):

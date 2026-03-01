@@ -107,11 +107,59 @@ exportcsv IS income.csv 2025-01-01 2025-12-31  # Report to CSV
 - H15  HST 15%
 - E    Exempt (no tax split)
 
+## CRITICAL: Perpetual Retained Earnings System
+GridTRX uses perpetual totals inherited from NV1 — there is NO traditional year-end
+close that zeros revenue/expense accounts. Instead, the total-to chain computes
+net income dynamically and flows it to the BS. This chain MUST be intact.
+
+### Required Total-To Chain (IS → BS)
+Revenue accounts → TOTREV → GROSS → OPINC → NETINC → NI → RE.CLOSE → RE (on BS)
+Expense accounts → TOTEX → OPINC (same chain continues to RE)
+COS accounts    → GROSS (same chain)
+
+The chain is GLOBAL across all reports. An IS total can feed a BS total.
+
+### Required Accounts for RE System
+- **NI** (C, total) — Net Income accumulator. All IS totals must reach this.
+- **RE.CLOSE** (C, total) — Closing retained earnings. Receives NI + RE.OPEN + DIVPAID.
+- **RE** (C, total) — Retained earnings on BS. Receives RE.CLOSE + RE.OFS.
+- **RE.OPEN** (C, posting) — Opening retained earnings. Credited by ye command.
+- **RE.OFS** (D, posting) — Offset account. Debited by ye command. Cancels RE.OPEN in RE.
+
+### Year-End Process (ye command)
+Posts ONE entry dated first day of new fiscal year:
+  Dr RE.OFS / Cr RE.OPEN (for the closing RE amount)
+This "freezes" prior-year earnings into RE.OPEN. The debit in RE.OFS cancels
+RE.OPEN within the RE total, so only current-year NI shows in RE on the BS.
+Without this entry each year, retained earnings double-counts.
+
+### RE.OFS Report
+A separate report (sort order 50) that makes RE.OFS visible and wires it to RE:
+  RE.OPEN  (display only, no total-to)
+  RE.OFS   (total_to_1 = 'RE')
+
+### Always Start from Starter Books
+When creating new books, ALWAYS use create_starter_books() as the base. This
+ensures the RE chain, all 5 standard reports (BS, IS, AJE, TRX, RE.OFS), and
+the required total accounts are created correctly. Then add/modify accounts
+for the specific client. Never build reports from scratch without the RE chain.
+
+### Importing Client Data
+When importing a client's existing chart of accounts, preserve the client's
+original account layout and structure. Their previous accountant organized
+accounts logically — don't reorganize. Map client accounts to GridTRX naming
+(BANK.xxx, AR.xxx, etc.) but keep the grouping and ordering intact.
+
+### Validate
+Run `validate` after any report setup to check the chain is intact:
+  python cli.py books.db validate
+
 ## Important Notes
 - Lock date prevents posting to closed periods. Check with: lock
 - Year-end (ye) is one-way: it posts a closing entry and locks the year.
 - The trial balance MUST always balance. If it doesn't, something is wrong.
 - Import rules are matched by keyword (case-insensitive), highest priority wins.
+- Total report items MUST have an account_id linked or they will always show zero.
 
 ## Workspace Security
 Set GRIDTRX_WORKSPACE to restrict file access to a single directory.

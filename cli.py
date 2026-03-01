@@ -278,6 +278,7 @@ class GridCLI(cmd.Cmd):
 
   YEAR-END
     ye [YYYY-MM-DD]          Year-end rollover (posts RE offset, sets lock)
+    validate                 Validate report chain (IS→BS, RE.OFS, totals)
 
   OTHER
     reconcile <account>      Show reconciliation summary
@@ -1874,6 +1875,43 @@ class GridCLI(cmd.Cmd):
             else:
                 print("  Lock date: (none)")
                 print("  Set one with: lock YYYY-MM-DD")
+
+    # ─── Validate ─────────────────────────────────────────────
+
+    def do_validate(self, arg):
+        """Validate the report total-to chain.
+        Usage: validate
+
+        Checks that the IS chain reaches RE on the BS, that RE.OFS and RE.OPEN
+        accounts exist, that total report items have accounts linked, and that
+        the BS balances.
+        """
+        if not self._require_books():
+            return
+
+        issues = models.validate_report_chain()
+        errors = [i for i in issues if i['level'] == 'error']
+        warnings = [i for i in issues if i['level'] == 'warning']
+        ok = [i for i in issues if i['level'] == 'ok']
+
+        if ok:
+            print(f"\n  {ok[0]['message']}")
+
+        if warnings:
+            print(f"\n  Warnings ({len(warnings)}):")
+            for w in warnings:
+                print(f"    ⚠ {w['message']}")
+
+        if errors:
+            print(f"\n  Errors ({len(errors)}):")
+            for e in errors:
+                print(f"    ✗ {e['message']}")
+
+        if not errors and not warnings:
+            print("  All checks passed.")
+        elif errors:
+            print(f"\n  {len(errors)} error(s) found. The report chain has problems.")
+        print()
 
     # ─── YE rollover ───────────────────────────────────────────
 

@@ -276,6 +276,17 @@
 <script>
 const AID = {{ account.id }};
 const REPORT_ID = '{{ parent_report.id if parent_report else "" }}';
+const IS_AJE = {{ 'true' if parent_report and parent_report.name == 'AJE' else 'false' }};
+
+// ── AJE sticky date/ref: pre-fill from previous post ──
+if (IS_AJE) {
+  const sd = sessionStorage.getItem('aje_sticky_date');
+  const sr = sessionStorage.getItem('aje_sticky_ref');
+  document.addEventListener('DOMContentLoaded', function() {
+    if (sd) document.getElementById('ed').value = sd;
+    if (sr) document.getElementById('er').value = sr;
+  });
+}
 
 // ── Doc-on-file toggle (AJAX) ──
 async function toggleDoc(btn) {
@@ -815,7 +826,13 @@ async function doPost(gst, gstType) {
     const resp = await fetch(`/api/quick-entry/${AID}`, {method:'POST', body:body,
       headers:{'Content-Type':'application/x-www-form-urlencoded'}});
     const data = await resp.json();
-    if (data.ok) { window.location.reload(); }
+    if (data.ok) {
+      if (IS_AJE) {
+        sessionStorage.setItem('aje_sticky_date', d);
+        sessionStorage.setItem('aje_sticky_ref', r);
+      }
+      window.location.reload();
+    }
     else { ss('err', data.error || 'Error'); }
   } catch(err) { ss('err', 'Network error'); }
 }

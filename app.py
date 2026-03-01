@@ -3448,6 +3448,36 @@ def report_formatted():
     return redirect(f'/report/{rpt["id"]}/print?{params}')
 
 
+# ─── Setup Subledgers ──────────────────────────────────────────────
+
+@app.route('/api/setup-detailed-ar', methods=['POST'])
+def api_setup_detailed_ar():
+    """One-click scaffold for Detailed AR subledger report."""
+    if not models.get_db_path():
+        return jsonify({'ok': False, 'error': 'No books open'})
+    try:
+        result = models.setup_detailed_ar()
+        return jsonify({'ok': True, 'message': result})
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
+@app.route('/api/setup-detailed-ap', methods=['POST'])
+def api_setup_detailed_ap():
+    """One-click scaffold for Detailed AP subledger report."""
+    if not models.get_db_path():
+        return jsonify({'ok': False, 'error': 'No books open'})
+    try:
+        result = models.setup_detailed_ap()
+        return jsonify({'ok': True, 'message': result})
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
+
 # ─── Entry Point ────────────────────────────────────────────────────
 
 def main():

@@ -599,6 +599,56 @@ class GridCLI(cmd.Cmd):
         except Exception as e:
             print(f"  Error adding account: {e}")
 
+    def do_setupar(self, arg):
+        """Setup a Detailed Accounts Receivable subledger report.
+        Usage: setupar
+
+        Creates an AR report with 3 sample client accounts (Gretzky, Lemieux, Orr),
+        a total account (ARDET), and links it to the Balance Sheet via AR.DET.
+
+        The sample accounts use the R.XYZABC naming convention:
+          R.GREWAY  Gretzky, Wayne
+          R.LEMMAR  Lemieux, Mario
+          R.ORRBOB  Orr, Bobby
+
+        After setup, add real clients with: addaccount R.SMIJOH D "Smith, John"
+        Then add them to the AR report with total-to set to ARDET.
+        """
+        if not self._require_books():
+            return
+        try:
+            result = models.setup_detailed_ar()
+            print(f"  {result}")
+        except ValueError as e:
+            print(f"  Error: {e}")
+        except Exception as e:
+            print(f"  Error setting up AR subledger: {e}")
+
+    def do_setupap(self, arg):
+        """Setup a Detailed Accounts Payable subledger report.
+        Usage: setupap
+
+        Creates an AP.SUB report with 3 sample vendor accounts (Bauer, CCM, Warrior),
+        a total account (APDET), and links it to the Balance Sheet via AP.DET → AP.TOT.
+
+        The sample accounts use the P.XYZABC naming convention:
+          P.BAUEQU  Bauer, Equipment
+          P.CCMSPO  CCM, Sports
+          P.WARHOC  Warrior, Hockey
+
+        After setup, add real vendors with: addaccount P.SMISUP C "Smith, Supply"
+        Then add them to the AP.SUB report with total-to set to APDET.
+        """
+        if not self._require_books():
+            return
+        try:
+            result = models.setup_detailed_ap()
+            print(f"  {result}")
+        except ValueError as e:
+            print(f"  Error: {e}")
+        except Exception as e:
+            print(f"  Error setting up AP subledger: {e}")
+
     def do_editaccount(self, arg):
         """Edit an account's description or account number.
         Usage: editaccount <name> [--desc "text"] [--num "1000"]

@@ -1255,3 +1255,249 @@ def create_starter_books(path, company_name='My Company', fiscal_ye='12-31'):
     save_tax_code('E', 'Exempt (no tax)', 0, '', '')
 
     return path
+
+
+# ─── Setup Detailed AR Subledger ─────────────────────────────────
+def setup_detailed_ar():
+    """Scaffold a Detailed Accounts Receivable subledger report.
+
+    Creates:
+      - AR report on the home screen with 3 sample client accounts
+      - ARDET total account that accumulates client balances
+      - AR.DET total account on the BS that receives the cross-report total
+      - Cross-report link: client R. accounts → ARDET → AR.DET → AR.TOT → CA → TA
+
+    Raises ValueError if the AR report already exists or BS report is missing.
+    Returns a summary string on success.
+    """
+    # ── Guard: AR report must not already exist ──
+    existing = find_report_by_name('AR')
+    if existing:
+        raise ValueError("AR report already exists. Cannot create duplicate.")
+
+    # ── Guard: BS report must exist ──
+    bs = find_report_by_name('BS')
+    if not bs:
+        raise ValueError("Balance Sheet (BS) report not found. Create books first.")
+
+    # ── Create accounts ──
+    samples = [
+        ('R.GREWAY', 'D', 'Gretzky, Wayne'),
+        ('R.LEMMAR', 'D', 'Lemieux, Mario'),
+        ('R.ORRBOB', 'D', 'Orr, Bobby'),
+    ]
+    sample_ids = {}
+    for name, nb, desc in samples:
+        ex = get_account_by_name(name)
+        if ex:
+            sample_ids[name] = ex['id']
+        else:
+            sample_ids[name] = add_account(name, nb, desc, 'posting')
+
+    # ARDET — total account on AR report (receives client balances)
+    ex = get_account_by_name('ARDET')
+    if ex:
+        ardet_id = ex['id']
+    else:
+        ardet_id = add_account('ARDET', 'D', 'Detailed AR - Total', 'total')
+
+    # AR.DET — total account on BS (receives cross-report total from ARDET)
+    ex = get_account_by_name('AR.DET')
+    if ex:
+        ardet_bs_id = ex['id']
+    else:
+        ardet_bs_id = add_account('AR.DET', 'D', 'Detailed AR', 'total')
+
+    # ── Create the AR report ──
+    # Sort after BS(10), IS(20), before AJE(30) — use 25
+    ar_report = add_report('AR', 'Accounts Receivable - Detailed', 25)
+
+    # ── Populate AR report items ──
+    p = [0]
+    def ai(itype, desc='', acct_id=None, ind=0, tt1='', sep=''):
+        p[0] += 10
+        add_report_item(ar_report, itype, desc, acct_id, ind, p[0], tt1, sep_style=sep)
+
+    ai('label', 'Accounts Receivable - Detailed')
+    ai('label', '')
+    ai('label', 'Client Receivables:', ind=1)
+    ai('account', '', sample_ids['R.GREWAY'], 2, 'ARDET')
+    ai('account', '', sample_ids['R.LEMMAR'], 2, 'ARDET')
+    ai('account', '', sample_ids['R.ORRBOB'], 2, 'ARDET')
+    ai('separator', sep='single')
+    ai('total', '', ardet_id, 3, 'AR.DET')  # cross-report link
+    ai('separator', sep='double')
+
+    # ── Insert AR.DET on the BS near existing AR account ──
+    bs_items = get_report_items(bs['id'])
+
+    # Find existing AR account on BS
+    ar_item = None
+    ar_position = None
+    ar_total_to = 'CA'  # fallback
+    for item in bs_items:
+        if item['acct_name'] and item['acct_name'].upper() == 'AR':
+            ar_item = item
+            ar_position = item['position']
+            ar_total_to = item['total_to_1'] or 'AR.TOT'
+            break
+
+    if ar_item:
+        # Insert AR.DET just after the existing AR account
+        insert_pos = ar_position + 1
+    else:
+        # No AR account found — look for Current Assets total (CA) and insert before it
+        for item in bs_items:
+            if item['acct_name'] and item['acct_name'].upper() == 'CA':
+                insert_pos = item['position'] - 1
+                ar_total_to = 'CA'
+                break
+        else:
+            # Last resort: append to end of BS
+            insert_pos = None
+            ar_total_to = 'CA'
+
+    # AR.DET totals to the same target as AR (typically AR.TOT)
+    add_report_item(bs['id'], 'account', '', ardet_bs_id, 2, insert_pos, ar_total_to)
+
+    created = ', '.join(s[0] for s in samples)
+    return (f"Detailed AR subledger created. "
+            f"Report: AR ({len(samples)} sample clients: {created}). "
+            f"Total account ARDET → AR.DET on BS → {ar_total_to}.")
+
+
+# ─── Setup Detailed AP Subledger ─────────────────────────────────
+def setup_detailed_ap():
+    """Scaffold a Detailed Accounts Payable subledger report.
+
+    Creates:
+      - AP.SUB report on the home screen with 3 sample vendor accounts
+      - APDET total account that accumulates vendor balances
+      - AP.DET total account on the BS that receives the cross-report total
+      - AP.TOT total account on the BS that subtotals AP + AP.CC + AP.DET → CL
+      - Cross-report link: vendor P. accounts → APDET → AP.DET → AP.TOT → CL → TL
+
+    Raises ValueError if the AP.SUB report already exists or BS report is missing.
+    Returns a summary string on success.
+    """
+    # ── Guard: AP.SUB report must not already exist ──
+    existing = find_report_by_name('AP.SUB')
+    if existing:
+        raise ValueError("AP.SUB report already exists. Cannot create duplicate.")
+
+    # ── Guard: BS report must exist ──
+    bs = find_report_by_name('BS')
+    if not bs:
+        raise ValueError("Balance Sheet (BS) report not found. Create books first.")
+
+    # ── Create vendor accounts ──
+    samples = [
+        ('P.BAUEQU', 'C', 'Bauer, Equipment'),
+        ('P.CCMSPO', 'C', 'CCM, Sports'),
+        ('P.WARHOC', 'C', 'Warrior, Hockey'),
+    ]
+    sample_ids = {}
+    for name, nb, desc in samples:
+        ex = get_account_by_name(name)
+        if ex:
+            sample_ids[name] = ex['id']
+        else:
+            sample_ids[name] = add_account(name, nb, desc, 'posting')
+
+    # APDET — total account on AP.SUB report (receives vendor balances)
+    ex = get_account_by_name('APDET')
+    if ex:
+        apdet_id = ex['id']
+    else:
+        apdet_id = add_account('APDET', 'C', 'Detailed AP - Total', 'total')
+
+    # AP.DET — total account on BS (receives cross-report total from APDET)
+    ex = get_account_by_name('AP.DET')
+    if ex:
+        apdet_bs_id = ex['id']
+    else:
+        apdet_bs_id = add_account('AP.DET', 'C', 'Detailed AP', 'total')
+
+    # AP.TOT — total account on BS (subtotals AP + AP.CC + AP.DET → CL)
+    ex = get_account_by_name('AP.TOT')
+    if ex:
+        aptot_id = ex['id']
+    else:
+        aptot_id = add_account('AP.TOT', 'C', 'Total Accounts Payable', 'total')
+
+    # ── Create the AP.SUB report ──
+    # Sort after AR(25), before AJE(30) — use 26
+    ap_report = add_report('AP.SUB', 'Accounts Payable - Detailed', 26)
+
+    # ── Populate AP.SUB report items ──
+    p = [0]
+    def ai(itype, desc='', acct_id=None, ind=0, tt1='', sep=''):
+        p[0] += 10
+        add_report_item(ap_report, itype, desc, acct_id, ind, p[0], tt1, sep_style=sep)
+
+    ai('label', 'Accounts Payable - Detailed')
+    ai('label', '')
+    ai('label', 'Vendor Payables:', ind=1)
+    ai('account', '', sample_ids['P.BAUEQU'], 2, 'APDET')
+    ai('account', '', sample_ids['P.CCMSPO'], 2, 'APDET')
+    ai('account', '', sample_ids['P.WARHOC'], 2, 'APDET')
+    ai('separator', sep='single')
+    ai('total', '', apdet_id, 3, 'AP.DET')  # cross-report link
+    ai('separator', sep='double')
+
+    # ── Restructure BS: add AP.DET and AP.TOT near existing AP accounts ──
+    bs_items = get_report_items(bs['id'])
+
+    # Find existing AP accounts on BS and the target they total to
+    ap_item = None
+    ap_cc_item = None
+    ap_total_to = 'CL'  # fallback
+    for item in bs_items:
+        name = (item['acct_name'] or '').upper()
+        if name == 'AP':
+            ap_item = item
+            ap_total_to = item['total_to_1'] or 'CL'
+        elif name == 'AP.CC':
+            ap_cc_item = item
+
+    # Re-point existing AP and AP.CC to total to AP.TOT instead of CL
+    if ap_item:
+        update_report_item(ap_item['id'], total_to_1='AP.TOT')
+    if ap_cc_item:
+        update_report_item(ap_cc_item['id'], total_to_1='AP.TOT')
+
+    # Determine insertion position — after AP.CC (or after AP if no AP.CC)
+    # _resequence() runs after each add_report_item, so re-read positions between inserts.
+    def _pos_after(acct_name):
+        """Find current position of an account on the BS and return pos+1."""
+        for it in get_report_items(bs['id']):
+            if (it['acct_name'] or '').upper() == acct_name.upper():
+                return it['position'] + 1
+        return None
+
+    last_ap = ap_cc_item or ap_item
+    last_ap_name = last_ap['acct_name'] if last_ap else ''
+
+    # Insert AP.DET after last AP account
+    pos = _pos_after(last_ap_name) if last_ap_name else None
+    add_report_item(bs['id'], 'account', '', apdet_bs_id, 2, pos, 'AP.TOT')
+
+    # Insert separator after AP.DET (re-read position since resequence ran)
+    pos = _pos_after('AP.DET')
+    add_report_item(bs['id'], 'separator', '', None, 0, pos, sep_style='single')
+
+    # Insert AP.TOT after the separator — find AP.DET pos, skip 2 (AP.DET + sep)
+    items_now = get_report_items(bs['id'])
+    for i, it in enumerate(items_now):
+        if (it['acct_name'] or '').upper() == 'AP.DET':
+            # AP.DET is at index i, separator is i+1, insert AP.TOT at i+2
+            pos = items_now[i + 1]['position'] + 1 if i + 1 < len(items_now) else None
+            break
+    else:
+        pos = None
+    add_report_item(bs['id'], 'total', '', aptot_id, 3, pos, ap_total_to)
+
+    created = ', '.join(s[0] for s in samples)
+    return (f"Detailed AP subledger created. "
+            f"Report: AP.SUB ({len(samples)} sample vendors: {created}). "
+            f"Total account APDET → AP.DET on BS → AP.TOT → {ap_total_to}.")

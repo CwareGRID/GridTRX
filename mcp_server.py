@@ -618,6 +618,43 @@ def set_lock_date(db_path: str, lock_date: str = "") -> dict:
         return {"lock_date": current or None}
 
 
+@mcp.tool()
+def setup_detailed_ar(db_path: str) -> dict:
+    """Setup a Detailed Accounts Receivable subledger report.
+
+    Creates an AR report on the home screen with 3 sample client accounts
+    (Gretzky, Lemieux, Orr), a total account (ARDET), and links it to the
+    Balance Sheet via AR.DET. The cross-report total chain flows:
+    R. client accounts → ARDET → AR.DET (on BS) → AR.TOT → CA → TA.
+
+    Run once per set of books. Returns an error if the AR report already exists.
+    After setup, add real clients with add_account (e.g. R.SMIJOH, D, "Smith, John")
+    and place them on the AR report with total_to_1 set to ARDET.
+    """
+    _init(db_path)
+    result = models.setup_detailed_ar()
+    return {"success": True, "message": result}
+
+
+@mcp.tool()
+def setup_detailed_ap(db_path: str) -> dict:
+    """Setup a Detailed Accounts Payable subledger report.
+
+    Creates an AP.SUB report on the home screen with 3 sample vendor accounts
+    (Bauer, CCM, Warrior), a total account (APDET), and links it to the
+    Balance Sheet via AP.DET → AP.TOT. Also restructures the BS to add an
+    AP.TOT subtotal for all payable accounts. The cross-report total chain flows:
+    P. vendor accounts → APDET → AP.DET (on BS) → AP.TOT → CL → TL.
+
+    Run once per set of books. Returns an error if the AP.SUB report already exists.
+    After setup, add real vendors with add_account (e.g. P.SMISUP, C, "Smith, Supply")
+    and place them on the AP.SUB report with total_to_1 set to APDET.
+    """
+    _init(db_path)
+    result = models.setup_detailed_ap()
+    return {"success": True, "message": result}
+
+
 # ═══════════════════════════════════════════════════════════════════
 # HELPERS (CSV import)
 # ═══════════════════════════════════════════════════════════════════

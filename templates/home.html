@@ -33,6 +33,8 @@
     <a href="{{ url_for('new_transaction') }}" class="btn btn-sm">+ Transaction</a>
     <a href="{{ url_for('csv_import') }}" class="btn btn-sm">Import</a>
     <a href="{{ url_for('trial_balance') }}" class="btn btn-sm">Trial Bal</a>
+    <button class="btn btn-sm" onclick="setupDetailedAR()" title="Setup Detailed AR subledger report">Setup AR</button>
+    <button class="btn btn-sm" onclick="setupDetailedAP()" title="Setup Detailed AP subledger report">Setup AP</button>
   </div>
 </div>
 
@@ -85,6 +87,28 @@ document.addEventListener('keydown', function(e) {
 });
 
 rows.forEach((r, i) => r.addEventListener('click', () => pick(i)));
+
+function setupDetailedAR() {
+  if (!confirm('This will create an AR subledger report with 3 sample client accounts (Gretzky, Lemieux, Orr) and link it to the Balance Sheet.\n\nContinue?')) return;
+  fetch('/api/setup-detailed-ar', {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) { alert(d.message); location.reload(); }
+      else alert('Error: ' + d.error);
+    })
+    .catch(e => alert('Error: ' + e));
+}
+
+function setupDetailedAP() {
+  if (!confirm('This will create an AP subledger report with 3 sample vendor accounts (Bauer, CCM, Warrior) and link it to the Balance Sheet.\n\nContinue?')) return;
+  fetch('/api/setup-detailed-ap', {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) { alert(d.message); location.reload(); }
+      else alert('Error: ' + d.error);
+    })
+    .catch(e => alert('Error: ' + e));
+}
 
 function moveReport(rid, curSort, dir) {
   // Swap with adjacent report

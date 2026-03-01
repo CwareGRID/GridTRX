@@ -44,6 +44,9 @@ importcsv ~/data/jan2025.csv BANK.CHQ
     # Import bank CSV. Applies import rules to auto-categorize.
     # Unmatched rows go to EX.SUSP.
 
+importofx ~/data/jan2025.qbo BANK.CHQ
+    # Import bank OFX/QBO file. Same rules as importcsv.
+
 addrule SHOPIFY REV.SVC G5 10
     # Add import rule: keyword SHOPIFY -> account REV.SVC, GST 5%, priority 10
 
@@ -65,7 +68,8 @@ exportcsv IS income.csv 2025-01-01 2025-12-31  # Report to CSV
 
 ## Standard Workflow
 1. Create books:        new ~/clients/acme "Acme Corp"
-2. Import bank CSV:     importcsv ~/data/bank.csv BANK.CHQ
+2. Import bank data:    importcsv ~/data/bank.csv BANK.CHQ
+   Or OFX/QBO:          importofx ~/data/bank.qbo BANK.CHQ
 3. Review suspense:     ledger EX.SUSP
 4. Add rules:           addrule <keyword> <account> [tax] [priority]
 5. Delete suspense:     delete <txn_id>  (for each misposted entry)

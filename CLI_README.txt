@@ -300,7 +300,7 @@ All commands are case-insensitive. Arguments in [brackets] are optional.
     must equal credits). Type 'cancel' to abort.
 
     Example:
-      Grid/Acme Corp> postx 2025-03-15 "Office supplies"
+      Grid/Acme Corp> postx 2025-03-15 "Payroll March"
       [0.00 off] line> EX.SAL 5000
       [5000.00 off] line> GST.IN 250
       [5250.00 off] line> BANK.CHQ -5250
@@ -308,6 +308,10 @@ All commands are case-insensitive. Arguments in [brackets] are optional.
 
   importcsv <csvfile> <bank_account>
     Import a bank CSV file. See section 3 for details.
+
+  importofx <ofxfile> <bank_account>
+    Import a bank OFX/QBO file. Same rules as importcsv.
+    Example: importofx ~/downloads/jan2025.qbo BANK.CHQ
 
   edit <txn_id>
     Show the full details of a transaction: date, reference,

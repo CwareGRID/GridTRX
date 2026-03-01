@@ -225,6 +225,10 @@ class GridCLI(cmd.Cmd):
       Import a bank CSV. Applies rules automatically.
       Example: importcsv statements/jan2025.csv BANK.CHQ
 
+    importofx <ofxfile> <bank_account>
+      Import a bank OFX/QBO file. Applies rules automatically.
+      Example: importofx downloads/jan2025.qbo BANK.CHQ
+
     edit <txn_id>            Show transaction details
     delete <txn_id>          Delete a transaction
     search <query>           Search transactions
@@ -810,7 +814,7 @@ class GridCLI(cmd.Cmd):
         if len(parts) < 2:
             print('  Usage: postx <date> <description>')
             print('  Then enter lines. Positive=debit, negative=credit.')
-            print('  Example: postx 2025-03-01 "Office supplies"')
+            print('  Example: postx 2025-03-01 "Monthly payroll"')
             return
 
         date_str = parts[0]
@@ -1057,122 +1061,47 @@ class GridCLI(cmd.Cmd):
         if csv_repairs:
             print(f"  Auto-repaired {len(csv_repairs)} row(s) with extra fields (unquoted commas).")
 
-        posted = 0
-        skipped = 0
-        suspense = 0
-        errors = []
-        lock = models.get_meta('lock_date', '')
-
+        # Build row dicts for import_rows: parse amounts from CSV columns
+        import_data = []
+        parse_errors = []
         for row_num, row in enumerate(data_rows, start=2 if has_header else 1):
             if len(row) < 3:
-                errors.append((row_num, "Too few columns", ' | '.join(row)))
-                skipped += 1
+                parse_errors.append((row_num, "Too few columns", ' | '.join(row)))
                 continue
 
             row_date = row[0].strip()
             row_desc = row[1].strip()
 
             if not row_desc:
-                errors.append((row_num, "Missing description", row_date))
-                skipped += 1
-                continue
-
-            # Try to parse date (handle common formats)
-            row_date = _normalize_date(row_date)
-            if not row_date:
-                errors.append((row_num, f"Bad date '{row[0].strip()}'", row_desc[:30]))
-                skipped += 1
-                continue
-
-            # Check lock date
-            if lock and row_date <= lock:
-                errors.append((row_num, f"Before lock date {lock}", row_desc[:30]))
-                skipped += 1
+                parse_errors.append((row_num, "Missing description", row_date))
                 continue
 
             # Get amount
             if len(row) >= 4 and (row[2].strip() or row[3].strip()):
-                # Debit/Credit columns
                 try:
                     dr = parse_amount(row[2]) if row[2].strip() else 0
                     cr = parse_amount(row[3]) if row[3].strip() else 0
                     amount_cents = dr - cr
                 except Exception:
-                    errors.append((row_num, f"Bad amount '{row[2].strip()}/{row[3].strip()}'", row_desc[:30]))
-                    skipped += 1
+                    parse_errors.append((row_num, f"Bad amount '{row[2].strip()}/{row[3].strip()}'", row_desc[:30]))
                     continue
             else:
                 try:
                     amount_cents = parse_amount(row[2])
                 except Exception:
-                    errors.append((row_num, f"Bad amount '{row[2].strip()}'", row_desc[:30]))
-                    skipped += 1
+                    parse_errors.append((row_num, f"Bad amount '{row[2].strip()}'", row_desc[:30]))
                     continue
 
-            if amount_cents == 0:
-                errors.append((row_num, "Zero amount", row_desc[:30]))
-                skipped += 1
-                continue
+            import_data.append({
+                'date': row_date,
+                'description': row_desc,
+                'amount_cents': amount_cents,
+            })
 
-            # Apply rules
-            matched_acct, tax_code, tax_info = models.apply_rules(row_desc, amount_cents)
-
-            target_acct = models.get_account_by_name(matched_acct)
-            if not target_acct:
-                errors.append((row_num, f"Account '{matched_acct}' not found", row_desc[:30]))
-                skipped += 1
-                continue
-
-            if matched_acct == 'EX.SUSP':
-                suspense += 1
-
-            # Build lines
-            try:
-                if tax_info and tax_info.get('tax'):
-                    # Tax split
-                    tax_acct = models.get_account_by_name(tax_info['tax_acct'])
-                    if not tax_acct:
-                        # Fallback: no tax split
-                        models.add_simple_transaction(
-                            row_date, '', row_desc,
-                            target_acct['id'] if amount_cents < 0 else bank_acct['id'],
-                            bank_acct['id'] if amount_cents < 0 else target_acct['id'],
-                            abs(amount_cents))
-                    else:
-                        net = tax_info['net']
-                        tax = tax_info['tax']
-                        if amount_cents < 0:
-                            # Payment: Dr expense + Dr GST.IN, Cr bank
-                            txn_lines = [
-                                (target_acct['id'], net, row_desc),
-                                (tax_acct['id'], tax, f"{tax_code} on {row_desc[:30]}"),
-                                (bank_acct['id'], -(net + tax), row_desc)
-                            ]
-                        else:
-                            # Deposit: Dr bank, Cr revenue + Cr GST.OUT
-                            txn_lines = [
-                                (bank_acct['id'], net + tax, row_desc),
-                                (target_acct['id'], -net, row_desc),
-                                (tax_acct['id'], -tax, f"{tax_code} on {row_desc[:30]}")
-                            ]
-                        models.add_transaction(row_date, '', row_desc, txn_lines)
-                else:
-                    # Simple 2-line
-                    if amount_cents < 0:
-                        # Payment: Dr expense, Cr bank
-                        models.add_simple_transaction(
-                            row_date, '', row_desc,
-                            target_acct['id'], bank_acct['id'], abs(amount_cents))
-                    else:
-                        # Deposit: Dr bank, Cr revenue
-                        models.add_simple_transaction(
-                            row_date, '', row_desc,
-                            bank_acct['id'], target_acct['id'], abs(amount_cents))
-
-                posted += 1
-            except ValueError as e:
-                errors.append((row_num, str(e), row_desc[:30]))
-                skipped += 1
+        result = models.import_rows(bank_acct['id'], import_data)
+        posted = result['posted']
+        skipped = result['skipped'] + len(parse_errors)
+        suspense = result['to_suspense']
 
         # Summary
         print(f"\n  Import complete: {csv_path}")
@@ -1193,12 +1122,19 @@ class GridCLI(cmd.Cmd):
                 print(f"    ... and {len(csv_repairs) - 10} more")
 
         # Show errors
-        if errors:
-            print(f"\n  Errors ({len(errors)}):")
-            for row_num, reason, detail in errors[:20]:
-                print(f"    Row {row_num}: {reason} — {detail}")
-            if len(errors) > 20:
-                print(f"    ... and {len(errors) - 20} more")
+        all_errors = [(r, reason, detail) for r, reason, detail in parse_errors]
+        if result.get('errors'):
+            for e in result['errors']:
+                all_errors.append((e['row'], e['reason'], ''))
+        if all_errors:
+            print(f"\n  Errors ({len(all_errors)}):")
+            for row_num, reason, detail in all_errors[:20]:
+                msg = f"    Row {row_num}: {reason}"
+                if detail:
+                    msg += f" — {detail}"
+                print(msg)
+            if len(all_errors) > 20:
+                print(f"    ... and {len(all_errors) - 20} more")
 
         # Next steps
         if suspense:
@@ -1206,6 +1142,61 @@ class GridCLI(cmd.Cmd):
             print("  Review them: ledger EX.SUSP")
             print("  Add rules to prevent this: addrule <keyword> <account>")
         if posted:
+            print(f"\n  Verify the import: ledger {bank_acct['name']}")
+
+    def do_importofx(self, arg):
+        """Import a bank OFX/QBO file. Applies rules automatically.
+        Usage: importofx <ofxfile> <bank_account>
+        Example: importofx downloads/jan2025.qbo BANK.CHQ
+        """
+        if not self._require_books():
+            return
+
+        parts = _split_args(arg)
+        if len(parts) < 2:
+            print("  Usage: importofx <ofxfile> <bank_account>")
+            print("  Example: importofx downloads/jan2025.qbo BANK.CHQ")
+            return
+
+        ofx_path = os.path.expanduser(parts[0])
+        if not os.path.exists(ofx_path):
+            print(f"  File not found: {ofx_path}")
+            return
+
+        bank_acct = resolve_account(parts[1])
+        if not bank_acct:
+            return
+
+        if not self._check_posting_account(bank_acct):
+            return
+
+        try:
+            rows = models.parse_ofx(ofx_path)
+        except ValueError as e:
+            print(f"  Cannot read OFX file: {e}")
+            return
+
+        result = models.import_rows(bank_acct['id'], rows)
+
+        print(f"\n  Import complete: {ofx_path}")
+        print(f"    Rows processed: {result['rows_processed']}")
+        print(f"    Posted:         {result['posted']}")
+        print(f"    Skipped:        {result['skipped']}")
+        if result['to_suspense']:
+            print(f"    To suspense:    {result['to_suspense']}")
+
+        if result.get('errors'):
+            print(f"\n  Errors ({len(result['errors'])}):")
+            for e in result['errors'][:20]:
+                print(f"    Row {e['row']}: {e['reason']}")
+            if len(result['errors']) > 20:
+                print(f"    ... and {len(result['errors']) - 20} more")
+
+        if result['to_suspense']:
+            print(f"\n  {result['to_suspense']} items went to suspense (no matching rule).")
+            print("  Review them: ledger EX.SUSP")
+            print("  Add rules to prevent this: addrule <keyword> <account>")
+        if result['posted']:
             print(f"\n  Verify the import: ledger {bank_acct['name']}")
 
     # ─── reports ─────────────────────────────────────────────────
@@ -2041,25 +2032,7 @@ def _split_args(s):
 
 def _normalize_date(s):
     """Try to normalize a date string to YYYY-MM-DD."""
-    s = s.strip()
-    if not s:
-        return None
-
-    # Already YYYY-MM-DD
-    if len(s) == 10 and s[4] == '-' and s[7] == '-':
-        return s
-
-    # Try common formats
-    for fmt_str in ('%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d',
-                    '%m-%d-%Y', '%d-%m-%Y', '%b %d, %Y', '%B %d, %Y',
-                    '%m/%d/%y', '%d/%m/%y'):
-        try:
-            dt = datetime.strptime(s, fmt_str)
-            return dt.strftime('%Y-%m-%d')
-        except ValueError:
-            continue
-
-    return None
+    return models.normalize_date(s)
 
 
 # ─── Main ────────────────────────────────────────────────────────

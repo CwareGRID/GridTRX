@@ -391,123 +391,73 @@ def import_csv(db_path: str, csv_path: str, bank_account: str) -> dict:
     if not data_rows:
         raise ValueError("No data rows in CSV (only a header)")
 
-    posted = 0
-    skipped = 0
-    suspense = 0
-    errors = []
-    lock = models.get_meta("lock_date", "")
-
+    # Build row dicts for import_rows: parse amounts from CSV columns
+    import_data = []
+    parse_errors = []
     for row_num, row in enumerate(data_rows, start=2 if has_header else 1):
         if len(row) < 3:
-            errors.append({"row": row_num, "reason": "Too few columns"})
-            skipped += 1
+            parse_errors.append({"row": row_num, "reason": "Too few columns"})
             continue
 
         row_date = row[0].strip()
         row_desc = row[1].strip()
 
         if not row_desc:
-            errors.append({"row": row_num, "reason": "Missing description"})
-            skipped += 1
+            parse_errors.append({"row": row_num, "reason": "Missing description"})
             continue
 
-        row_date = _normalize_date(row_date)
-        if not row_date:
-            errors.append({"row": row_num, "reason": f"Bad date '{row[0].strip()}'"})
-            skipped += 1
-            continue
-
-        if lock and row_date <= lock:
-            errors.append({"row": row_num, "reason": f"Before lock date {lock}"})
-            skipped += 1
-            continue
-
-        # Parse amount
         if len(row) >= 4 and (row[2].strip() or row[3].strip()):
             try:
                 dr = models.parse_amount(row[2]) if row[2].strip() else 0
                 cr = models.parse_amount(row[3]) if row[3].strip() else 0
                 amount_cents = dr - cr
             except Exception:
-                errors.append({"row": row_num, "reason": f"Bad amount '{row[2].strip()}/{row[3].strip()}'"})
-                skipped += 1
+                parse_errors.append({"row": row_num, "reason": f"Bad amount '{row[2].strip()}/{row[3].strip()}'"})
                 continue
         else:
             try:
                 amount_cents = models.parse_amount(row[2])
             except Exception:
-                errors.append({"row": row_num, "reason": f"Bad amount '{row[2].strip()}'"})
-                skipped += 1
+                parse_errors.append({"row": row_num, "reason": f"Bad amount '{row[2].strip()}'"})
                 continue
 
-        if amount_cents == 0:
-            errors.append({"row": row_num, "reason": "Zero amount"})
-            skipped += 1
-            continue
+        import_data.append({
+            'date': row_date,
+            'description': row_desc,
+            'amount_cents': amount_cents,
+        })
 
-        matched_acct, tax_code, tax_info = models.apply_rules(row_desc, amount_cents)
-
-        target_acct = models.get_account_by_name(matched_acct)
-        if not target_acct:
-            errors.append({"row": row_num, "reason": f"Account '{matched_acct}' not found"})
-            skipped += 1
-            continue
-
-        if matched_acct == "EX.SUSP":
-            suspense += 1
-
-        try:
-            if tax_info and tax_info.get("tax"):
-                tax_acct = models.get_account_by_name(tax_info["tax_acct"])
-                if not tax_acct:
-                    models.add_simple_transaction(
-                        row_date, "", row_desc,
-                        target_acct["id"] if amount_cents < 0 else bank_acct["id"],
-                        bank_acct["id"] if amount_cents < 0 else target_acct["id"],
-                        abs(amount_cents),
-                    )
-                else:
-                    net = tax_info["net"]
-                    tax = tax_info["tax"]
-                    if amount_cents < 0:
-                        txn_lines = [
-                            (target_acct["id"], net, row_desc),
-                            (tax_acct["id"], tax, f"{tax_code} on {row_desc[:30]}"),
-                            (bank_acct["id"], -(net + tax), row_desc),
-                        ]
-                    else:
-                        txn_lines = [
-                            (bank_acct["id"], net + tax, row_desc),
-                            (target_acct["id"], -net, row_desc),
-                            (tax_acct["id"], -tax, f"{tax_code} on {row_desc[:30]}"),
-                        ]
-                    models.add_transaction(row_date, "", row_desc, txn_lines)
-            else:
-                if amount_cents < 0:
-                    models.add_simple_transaction(
-                        row_date, "", row_desc,
-                        target_acct["id"], bank_acct["id"], abs(amount_cents),
-                    )
-                else:
-                    models.add_simple_transaction(
-                        row_date, "", row_desc,
-                        bank_acct["id"], target_acct["id"], abs(amount_cents),
-                    )
-            posted += 1
-        except ValueError as e:
-            errors.append({"row": row_num, "reason": str(e)})
-            skipped += 1
-
-    result = {
-        "rows_processed": len(data_rows),
-        "posted": posted,
-        "skipped": skipped,
-        "to_suspense": suspense,
-    }
+    result = models.import_rows(bank_acct['id'], import_data)
+    result['rows_processed'] = len(data_rows)
+    result['skipped'] = result['skipped'] + len(parse_errors)
     if csv_repairs:
         result["rows_repaired"] = len(csv_repairs)
-    if errors:
-        result["errors"] = errors[:20]
+    if parse_errors:
+        all_errors = parse_errors + result.get('errors', [])
+        result['errors'] = all_errors[:20]
+    return result
+
+
+@mcp.tool()
+def import_ofx(db_path: str, ofx_path: str, bank_account: str) -> dict:
+    """Import a bank OFX/QBO file. Applies import rules to auto-categorize.
+
+    OFX/QBO files are standard bank download formats. Supports both XML-based
+    and SGML-based OFX files. Positive amounts = deposits, negative = payments.
+    Unmatched rows go to EX.SUSP (suspense). Review with get_ledger('EX.SUSP').
+    """
+    _init(db_path)
+
+    ofx_path = os.path.expanduser(ofx_path)
+    if not os.path.exists(ofx_path):
+        raise ValueError(f"File not found: {ofx_path}")
+
+    bank_acct = models.get_account_by_name(bank_account)
+    if not bank_acct:
+        raise ValueError(f"Bank account not found: {bank_account}")
+
+    rows = models.parse_ofx(ofx_path)
+    result = models.import_rows(bank_acct['id'], rows)
     return result
 
 
@@ -629,20 +579,7 @@ def set_lock_date(db_path: str, lock_date: str = "") -> dict:
 
 def _normalize_date(s):
     """Try to normalize a date string to YYYY-MM-DD."""
-    s = s.strip()
-    if not s:
-        return None
-    if len(s) == 10 and s[4] == "-" and s[7] == "-":
-        return s
-    for fmt_str in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d",
-                    "%m-%d-%Y", "%d-%m-%Y", "%b %d, %Y", "%B %d, %Y",
-                    "%m/%d/%y", "%d/%m/%y"):
-        try:
-            dt = datetime.strptime(s, fmt_str)
-            return dt.strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
+    return models.normalize_date(s)
 
 
 def _normalize_csv(rows_raw):

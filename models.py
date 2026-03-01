@@ -1,6 +1,7 @@
 """
 Grid — Data Model & Database Layer (v2)
-Reports contain ordered items (posting accounts, total accounts, labels, separators).
+NV-style architecture: reports contain ordered items.
+Items can be posting accounts, total accounts, labels, or separators.
 6 total-to columns enable flexible report arithmetic.
 All amounts stored as integers (cents). Double-entry enforced.
 """
@@ -759,6 +760,216 @@ def parse_amount(s):
         cents = int(s) * 100
     return -cents if neg else cents
 
+def normalize_date(s):
+    """Normalize a date string to YYYY-MM-DD. Handles OFX (YYYYMMDD), common date formats."""
+    s = s.strip()
+    if not s: return None
+    if len(s) == 10 and s[4] == '-' and s[7] == '-': return s
+    # OFX format: YYYYMMDD or YYYYMMDDHHMMSS
+    if len(s) >= 8 and s[:8].isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    for fmt_str in ('%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d',
+                    '%m-%d-%Y', '%d-%m-%Y', '%b %d, %Y', '%B %d, %Y',
+                    '%m/%d/%y', '%d/%m/%y'):
+        try: return datetime.strptime(s, fmt_str).strftime('%Y-%m-%d')
+        except ValueError: continue
+    return None
+
+def _ofx_sgml_to_xml(content):
+    """Convert OFX SGML to valid XML by closing unclosed tags."""
+    import re
+    # Container/aggregate tags that wrap children — do NOT self-close these
+    aggregates = {
+        'OFX', 'SIGNONMSGSRSV1', 'SONRS', 'STATUS', 'FI',
+        'BANKMSGSRSV1', 'STMTTRNRS', 'STMTRS', 'BANKACCTFROM',
+        'BANKTRANLIST', 'STMTTRN', 'LEDGERBAL', 'AVAILBAL',
+        'CREDITCARDMSGSRSV1', 'CCSTMTTRNRS', 'CCSTMTRS', 'CCACCTFROM',
+    }
+    agg_lower = {t.lower() for t in aggregates}
+
+    def close_tags(match):
+        tag = match.group(1)
+        value = match.group(2).strip()
+        if tag.lower() in agg_lower:
+            return match.group(0)  # leave aggregates alone
+        return f"<{tag}>{value}</{tag}>"
+
+    # Match <TAG>value where value is non-empty text (not starting with <)
+    return re.sub(r'<([A-Za-z0-9_.]+)>([^<\r\n]+)', close_tags, content)
+
+def parse_ofx(file_path):
+    """Parse an OFX/QBO file and return a list of row dicts for import_rows().
+
+    Each dict has: date, description, amount_cents, reference (FITID).
+    Uses stdlib only (xml.etree.ElementTree).
+    """
+    import xml.etree.ElementTree as ET
+
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+
+    # Strip OFX headers (everything before <OFX>)
+    idx = content.upper().find('<OFX>')
+    if idx < 0:
+        raise ValueError("Not a valid OFX file: no <OFX> tag found")
+    content = content[idx:]
+
+    # Try parsing as valid XML first, then fall back to SGML conversion
+    root = None
+    for attempt_content in [content, _ofx_sgml_to_xml(content)]:
+        for suffix in ['', '</OFX>']:
+            try:
+                root = ET.fromstring(attempt_content + suffix)
+                break
+            except ET.ParseError:
+                continue
+        if root is not None:
+            break
+    if root is None:
+        raise ValueError("Cannot parse OFX file: invalid XML/SGML structure")
+
+    # Find all STMTTRN elements (works for both bank and credit card statements)
+    transactions = root.iter('STMTTRN')
+
+    rows = []
+    for txn in transactions:
+        dt_el = txn.find('DTPOSTED')
+        amt_el = txn.find('TRNAMT')
+        name_el = txn.find('NAME')
+        memo_el = txn.find('MEMO')
+        fitid_el = txn.find('FITID')
+
+        if dt_el is None or amt_el is None:
+            continue
+
+        # Build description from NAME + MEMO
+        name = (name_el.text or '').strip() if name_el is not None else ''
+        memo = (memo_el.text or '').strip() if memo_el is not None else ''
+        if memo and memo.lower() != name.lower():
+            description = f"{name} — {memo}" if name else memo
+        else:
+            description = name or memo
+
+        if not description:
+            continue
+
+        amount_cents = parse_amount(amt_el.text)
+        fitid = (fitid_el.text or '').strip() if fitid_el is not None else ''
+
+        rows.append({
+            'date': (dt_el.text or '').strip(),
+            'description': description,
+            'amount_cents': amount_cents,
+            'reference': fitid,
+        })
+
+    if not rows:
+        raise ValueError("No transactions found in OFX file")
+
+    return rows
+
+def import_rows(bank_account_id, rows):
+    """Shared posting loop for CSV and OFX imports.
+
+    Args:
+        bank_account_id: int — the bank account to post against
+        rows: list of dicts with keys: date, description, amount_cents, reference (optional)
+
+    Returns:
+        dict with: rows_processed, posted, skipped, to_suspense, errors
+    """
+    posted = 0
+    skipped = 0
+    suspense = 0
+    errors = []
+    lock = get_meta('lock_date', '')
+
+    for row_num, row in enumerate(rows, start=1):
+        row_date = normalize_date(row['date'])
+        row_desc = row['description']
+        amount_cents = row['amount_cents']
+        reference = row.get('reference', '')
+
+        if not row_desc:
+            errors.append({'row': row_num, 'reason': 'Missing description'})
+            skipped += 1
+            continue
+
+        if not row_date:
+            errors.append({'row': row_num, 'reason': f"Bad date '{row['date']}'"})
+            skipped += 1
+            continue
+
+        if lock and row_date <= lock:
+            errors.append({'row': row_num, 'reason': f'Before lock date {lock}'})
+            skipped += 1
+            continue
+
+        if amount_cents == 0:
+            errors.append({'row': row_num, 'reason': 'Zero amount'})
+            skipped += 1
+            continue
+
+        matched_acct, tax_code, tax_info = apply_rules(row_desc, amount_cents)
+
+        target_acct = get_account_by_name(matched_acct)
+        if not target_acct:
+            errors.append({'row': row_num, 'reason': f"Account '{matched_acct}' not found"})
+            skipped += 1
+            continue
+
+        if matched_acct == 'EX.SUSP':
+            suspense += 1
+
+        try:
+            if tax_info and tax_info.get('tax'):
+                tax_acct = get_account_by_name(tax_info['tax_acct'])
+                if not tax_acct:
+                    add_simple_transaction(
+                        row_date, reference, row_desc,
+                        target_acct['id'] if amount_cents < 0 else bank_account_id,
+                        bank_account_id if amount_cents < 0 else target_acct['id'],
+                        abs(amount_cents))
+                else:
+                    net = tax_info['net']
+                    tax = tax_info['tax']
+                    if amount_cents < 0:
+                        txn_lines = [
+                            (target_acct['id'], net, row_desc),
+                            (tax_acct['id'], tax, f"{tax_code} on {row_desc[:30]}"),
+                            (bank_account_id, -(net + tax), row_desc),
+                        ]
+                    else:
+                        txn_lines = [
+                            (bank_account_id, net + tax, row_desc),
+                            (target_acct['id'], -net, row_desc),
+                            (tax_acct['id'], -tax, f"{tax_code} on {row_desc[:30]}"),
+                        ]
+                    add_transaction(row_date, reference, row_desc, txn_lines)
+            else:
+                if amount_cents < 0:
+                    add_simple_transaction(
+                        row_date, reference, row_desc,
+                        target_acct['id'], bank_account_id, abs(amount_cents))
+                else:
+                    add_simple_transaction(
+                        row_date, reference, row_desc,
+                        bank_account_id, target_acct['id'], abs(amount_cents))
+            posted += 1
+        except ValueError as e:
+            errors.append({'row': row_num, 'reason': str(e)})
+            skipped += 1
+
+    result = {
+        'rows_processed': len(rows),
+        'posted': posted,
+        'skipped': skipped,
+        'to_suspense': suspense,
+    }
+    if errors:
+        result['errors'] = errors[:20]
+    return result
+
 # ─── Starter Template ─────────────────────────────────────────────
 def create_starter_books(path, company_name='My Company', fiscal_ye='12-31'):
     init_db(path)
@@ -969,8 +1180,9 @@ def create_starter_books(path, company_name='My Company', fiscal_ye='12-31'):
         ('OFFICE DEPOT','EX.OFFICE','G5', 10, ''),
         ('STAPLES',    'EX.OFFICE', 'G5', 10, ''),
         ('WALMART',    'EX.OFFICE', 'G5', 5,  ''),
-        # Tax remittances
-        ('CRA',        'FEDTAX',    'E',  5,  'Tax remittance'),
+        # Payroll
+        ('CRA',        'FEDTAX',    'E',  5,  'May be payroll remit or tax'),
+        ('PAYROLL',    'EX.SAL',    'E',  5,  ''),
         # Professional fees
         ('LEGAL',      'EX.FEES',   'G5', 5,  ''),
         # Rent

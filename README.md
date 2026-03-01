@@ -94,6 +94,7 @@ Unambiguous. No sign-flipping. What you see is what's stored. Agents can parse i
 | `ledger <acct> [from] [to]` | Account ledger with running balance |
 | `balance <acct> [from] [to]` | Single account balance |
 | `importcsv <file> <acct>` | Import bank CSV with auto-categorization |
+| `importofx <file> <acct>` | Import bank OFX/QBO with auto-categorization |
 | `accounts [posting\|total]` | List chart of accounts |
 | `find <query>` | Search accounts by name/description |
 | `search <query>` | Search transactions by description/reference |
@@ -129,7 +130,7 @@ Opens at `http://localhost:5000`. Same database, same data. Features include:
 
 ## MCP Server (AI Agent Integration)
 
-GridTRX includes an MCP server for structured AI agent access. Instead of parsing CLI text output, agents get typed JSON responses from 15 tools (10 read, 5 write) that wrap `models.py` directly.
+GridTRX includes an MCP server for structured AI agent access. Instead of parsing CLI text output, agents get typed JSON responses from 19 tools that wrap `models.py` directly.
 
 ```bash
 pip install mcp

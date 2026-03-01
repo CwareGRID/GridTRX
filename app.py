@@ -953,6 +953,19 @@ def api_sort_report(report_id):
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
 
+@app.route('/api/report/<int:report_id>/description', methods=['POST'])
+def api_report_description(report_id):
+    """Update a report's description."""
+    try:
+        data = request.get_json()
+        desc = data.get('description', '').strip()
+        if not desc:
+            return jsonify({'ok': False, 'error': 'Description cannot be empty'})
+        models.update_report(report_id, description=desc)
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
+
 # ─── Account Ledger ─────────────────────────────────────────────────
 
 @app.route('/account/<int:account_id>')
@@ -3457,33 +3470,32 @@ def report_formatted():
 
 # ─── AJE Print Report ─────────────────────────────────────────────
 
-@app.route('/reports/aje')
-def report_aje():
-    """Generate AJE print report — formatted PDF grouped by reference."""
+@app.route('/reports/aje/<int:account_id>')
+def report_aje(account_id):
+    """Generate AJE print report for a single account, grouped by reference."""
     if not models.get_db_path():
         return redirect(url_for('library'))
+
+    acct = models.get_account(account_id)
+    if not acct:
+        flash('Account not found', 'error')
+        return redirect(url_for('home'))
 
     begin = request.args.get('begin', '')
     end = request.args.get('end', '')
     company = models.get_meta('company_name', 'My Books')
 
-    # Get posting accounts on AJE report
-    aje_accounts = _get_report_account_order('AJE')
-    if not aje_accounts:
-        flash('No AJE report or no accounts on it', 'error')
-        return redirect(url_for('home'))
-
-    aje_account_ids = [a[0] for a in aje_accounts]
-
     try:
-        return _aje_pdf(aje_account_ids, begin, end, company)
+        return _aje_pdf(account_id, acct, begin, end, company)
     except Exception as e:
         flash(f'PDF error: {e}. Install reportlab: pip install reportlab', 'error')
-        return redirect(url_for('home'))
+        return redirect(url_for('account_ledger', account_id=account_id))
 
 
-def _aje_pdf(aje_account_ids, begin, end, company):
-    """Generate AJE report as monospaced PDF, grouped by reference number."""
+def _aje_pdf(account_id, acct, begin, end, company):
+    """Generate AJE report for one account as PDF, grouped by reference.
+    Lines: [ref] [date] [description] [amount] [account code]
+    """
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -3493,7 +3505,7 @@ def _aje_pdf(aje_account_ids, begin, end, company):
         from flask import abort
         abort(500, 'reportlab not installed. Run: pip install reportlab')
     import io, os
-    from collections import OrderedDict, defaultdict
+    from collections import OrderedDict
 
     # Font cascade — same as _gl_pdf
     font = 'Courier'
@@ -3532,15 +3544,18 @@ def _aje_pdf(aje_account_ids, begin, end, company):
     fs = 7
     line_h = 9
 
-    # Column positions
+    # Columns: ref | date | description | amount | account
     col_ref = margin
-    col_date = margin + 72
-    col_desc = margin + 138
-    debit_r = right_edge - 76   # right edge of debit numbers
-    credit_r = right_edge       # right edge of credit numbers
+    col_date = margin + 68
+    col_desc = margin + 130
+    amt_r = right_edge - 68     # right edge of amount
+    col_acct = right_edge - 60  # account code
 
     y = ph - margin
     page_num = 1
+
+    acct_name = acct['name']
+    acct_desc = acct['description'] or ''
 
     def short_date(d):
         if not d: return ''
@@ -3558,7 +3573,7 @@ def _aje_pdf(aje_account_ids, begin, end, company):
         c.setFont(font_b, 9)
         c.drawString(margin, ph - margin + 5, company)
         c.setFont(font_b, 8)
-        c.drawString(margin, ph - margin - 6, 'Adjusting Journal Entries')
+        c.drawString(margin, ph - margin - 6, f'{acct_name} — {acct_desc}')
         c.setFont(font, 6.5)
         c.drawString(margin, ph - margin - 15, f'{begin_s} to {end_s}')
         c.drawRightString(right_edge, ph - margin + 5, f'Page {page_num}')
@@ -3567,11 +3582,11 @@ def _aje_pdf(aje_account_ids, begin, end, company):
     def col_headers():
         nonlocal y
         c.setFont(font_b, fs)
-        c.drawString(col_ref, y, 'Reference')
+        c.drawString(col_ref, y, 'Ref')
         c.drawString(col_date, y, 'Date')
-        c.drawString(col_desc, y, 'Account / Description')
-        c.drawRightString(debit_r, y, 'Debit')
-        c.drawRightString(credit_r, y, 'Credit')
+        c.drawString(col_desc, y, 'Description')
+        c.drawRightString(amt_r, y, 'Amount')
+        c.drawString(col_acct, y, 'Account')
         y -= 2
         c.setLineWidth(0.4)
         c.line(margin, y, right_edge, y)
@@ -3585,144 +3600,63 @@ def _aje_pdf(aje_account_ids, begin, end, company):
             page_header()
             col_headers()
 
-    # ── Query data ────────────────────────────────────────────────
+    # ── Query: all transaction lines touching this account ────────
     with models.get_db() as db:
-        placeholders = ','.join(['?'] * len(aje_account_ids))
-        sql = f"""
-            SELECT DISTINCT t.id, t.date, t.reference, t.description
-            FROM transactions t
-            JOIN lines l ON l.transaction_id = t.id
-            WHERE l.account_id IN ({placeholders})
+        sql = """
+            SELECT t.id as txn_id, t.date, t.reference, t.description as txn_desc,
+                   l.amount, l.description as line_desc,
+                   GROUP_CONCAT(DISTINCT a2.name) as cross_accounts
+            FROM lines l
+            JOIN transactions t ON l.transaction_id = t.id
+            LEFT JOIN lines l2 ON l2.transaction_id = t.id AND l2.account_id != ?
+            LEFT JOIN accounts a2 ON l2.account_id = a2.id
+            WHERE l.account_id = ?
         """
-        params = list(aje_account_ids)
+        params = [account_id, account_id]
         if begin: sql += " AND t.date >= ?"; params.append(begin)
         if end: sql += " AND t.date <= ?"; params.append(end)
-        sql += " ORDER BY t.reference, t.date, t.id"
-        txns = db.execute(sql, params).fetchall()
+        sql += " GROUP BY l.id ORDER BY t.reference, t.date, t.id, l.sort_order"
+        rows = db.execute(sql, params).fetchall()
 
-        # All lines for those transactions
-        lines_by_txn = defaultdict(list)
-        if txns:
-            txn_ids = [t['id'] for t in txns]
-            ph2 = ','.join(['?'] * len(txn_ids))
-            all_lines = db.execute(f"""
-                SELECT l.transaction_id, l.amount, l.description as line_desc,
-                       a.name as account_name, a.description as acct_desc
-                FROM lines l
-                JOIN accounts a ON l.account_id = a.id
-                WHERE l.transaction_id IN ({ph2})
-                ORDER BY l.transaction_id, l.sort_order
-            """, txn_ids).fetchall()
-            for ln in all_lines:
-                lines_by_txn[ln['transaction_id']].append(ln)
-
-    # Group transactions by reference
+    # Group by reference
     groups = OrderedDict()
-    for txn in txns:
-        ref = txn['reference'] or '(no ref)'
+    for row in rows:
+        ref = row['reference'] or '(no ref)'
         if ref not in groups:
             groups[ref] = []
-        groups[ref].append({
-            'id': txn['id'],
-            'date': txn['date'],
-            'description': txn['description'] or '',
-            'lines': lines_by_txn.get(txn['id'], [])
-        })
+        groups[ref].append(row)
 
     # ── Draw PDF ──────────────────────────────────────────────────
     page_header()
     col_headers()
 
-    grand_dr, grand_cr = 0, 0
+    group_keys = list(groups.keys())
+    for gi, ref in enumerate(group_keys):
+        lines = groups[ref]
+        check_page(min(len(lines) + 1, 5))
 
-    for ref, txn_list in groups.items():
-        # Ensure room for header + lines + subtotal
-        detail_count = sum(len(t['lines']) for t in txn_list)
-        check_page(min(detail_count + 3, 6))
+        for row in lines:
+            check_page()
+            c.setFont(font, fs)
+            c.drawString(col_ref, y, (row['reference'] or '')[:10])
+            c.drawString(col_date, y, short_date(row['date']))
+            c.drawString(col_desc, y, (row['line_desc'] or row['txn_desc'] or '')[:42])
+            c.drawRightString(amt_r, y, _fmt_money(row['amount']))
+            cross = row['cross_accounts'] or ''
+            cross = '-split-' if ',' in cross else cross
+            c.drawString(col_acct, y, cross[:10])
+            y -= line_h
 
-        first_txn = txn_list[0]
-
-        # Group header — bold reference, date, description
-        c.setFont(font_b, fs)
-        c.drawString(col_ref, y, ref)
-        c.drawString(col_date, y, short_date(first_txn['date']))
-        c.drawString(col_desc, y, (first_txn['description'])[:52])
-        y -= line_h
-
-        group_dr, group_cr = 0, 0
-
-        for txn in txn_list:
-            # Sub-header for additional transactions under same reference
-            if txn is not first_txn:
-                check_page(3)
-                c.setFont(font, fs)
-                c.drawString(col_date, y, short_date(txn['date']))
-                c.drawString(col_desc, y, (txn['description'])[:52])
-                y -= line_h
-
-            for ln in txn['lines']:
-                check_page()
-                c.setFont(font, fs)
-                acct = ln['account_name'] or ''
-                desc = ln['acct_desc'] or ''
-                label = f'  {acct}  {desc}'
-                c.drawString(col_desc, y, label[:48])
-
-                amt = ln['amount']  # positive = debit, negative = credit
-                if amt > 0:
-                    group_dr += amt
-                    c.drawRightString(debit_r, y, _fmt_money(amt))
-                elif amt < 0:
-                    group_cr += -amt
-                    c.drawRightString(credit_r, y, _fmt_money(-amt))
-                y -= line_h
-
-        # Subtotal — thin underline then totals
-        check_page(2)
-        c.setLineWidth(0.3)
-        c.line(debit_r - 60, y + line_h - 2, debit_r, y + line_h - 2)
-        c.line(credit_r - 60, y + line_h - 2, credit_r, y + line_h - 2)
-
-        c.setFont(font_b, fs)
-        c.drawRightString(debit_r, y, _fmt_money(group_dr))
-        c.drawRightString(credit_r, y, _fmt_money(group_cr))
-        y -= line_h
-
-        grand_dr += group_dr
-        grand_cr += group_cr
-
-        # Spacing between groups
-        y -= line_h * 0.5
-
-    # Grand total — double underline
-    if groups:
-        check_page(3)
-        y -= line_h * 0.3
-
-        c.setLineWidth(0.4)
-        c.line(debit_r - 60, y + line_h + 2, debit_r, y + line_h + 2)
-        c.line(debit_r - 60, y + line_h - 1, debit_r, y + line_h - 1)
-        c.line(credit_r - 60, y + line_h + 2, credit_r, y + line_h + 2)
-        c.line(credit_r - 60, y + line_h - 1, credit_r, y + line_h - 1)
-
-        c.setFont(font_b, fs + 0.5)
-        c.drawString(col_desc, y, 'Grand Total')
-        c.drawRightString(debit_r, y, _fmt_money(grand_dr))
-        c.drawRightString(credit_r, y, _fmt_money(grand_cr))
-        y -= line_h
-
-        c.setLineWidth(0.4)
-        c.line(debit_r - 60, y + line_h - 2, debit_r, y + line_h - 2)
-        c.line(debit_r - 60, y + line_h - 5, debit_r, y + line_h - 5)
-        c.line(credit_r - 60, y + line_h - 2, credit_r, y + line_h - 2)
-        c.line(credit_r - 60, y + line_h - 5, credit_r, y + line_h - 5)
+        # 2 blank lines between groups
+        if gi < len(group_keys) - 1:
+            y -= line_h * 2
 
     c.save()
     buf.seek(0)
 
     resp = app.make_response(buf.read())
     resp.headers['Content-Type'] = 'application/pdf'
-    fname = f'AJE_{begin}_{end}.pdf' if begin and end else 'AJE_report.pdf'
+    fname = f'{acct_name}_{begin}_{end}.pdf' if begin and end else f'{acct_name}.pdf'
     resp.headers['Content-Disposition'] = f'inline; filename={fname}'
     return resp
 

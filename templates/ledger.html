@@ -114,7 +114,7 @@
   <a href="/reconcile/{{ account.id }}{% if parent_report %}?from_report={{ parent_report.id }}{% endif %}" class="btn btn-sm">Reconcile</a>
   <button class="btn btn-sm" onclick="window.print()">Print</button>
   {% if parent_report and parent_report.name == 'AJE' %}
-  <a href="/reports/aje?begin={{ date_from }}&end={{ date_to }}" class="btn btn-sm" target="_blank">Print AJE</a>
+  <button class="btn btn-sm" onclick="printAJE()">Print AJE</button>
   {% endif %}
 </div>
 
@@ -291,6 +291,17 @@ if (IS_AJE) {
     if (sd) document.getElementById('ed').value = sd;
     if (sr) document.getElementById('er').value = sr;
   });
+}
+
+// ── Print AJE ──
+function printAJE() {
+  const f = document.querySelector('input[name="from"]').value || '';
+  const t = document.querySelector('input[name="to"]').value || '';
+  const begin = prompt('From date (yyyy-mm-dd):', f);
+  if (begin === null) return;
+  const end = prompt('To date (yyyy-mm-dd):', t);
+  if (end === null) return;
+  window.open('/reports/aje/' + AID + '?begin=' + encodeURIComponent(begin.trim()) + '&end=' + encodeURIComponent(end.trim()), '_blank');
 }
 
 // ── Doc-on-file toggle (AJAX) ──

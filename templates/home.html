@@ -47,7 +47,7 @@
     </div>
     <a href="{{ url_for('report_view', report_id=report.id) }}" style="display:contents;color:inherit;text-decoration:none">
       <span class="sys-code">{{ report.name }}</span>
-      <span class="sys-desc">{{ report.description }}</span>
+      <span class="sys-desc" ondblclick="event.preventDefault();event.stopPropagation();renameReport({{report.id}},this)">{{ report.description }}</span>
       <span class="sys-arr">▸</span>
     </a>
   </div>
@@ -60,7 +60,7 @@
 </div>
 
 <div style="margin-top:8px;font-size:10px;color:var(--faint)">
-  <kbd>↑↓</kbd> navigate &nbsp; <kbd>Enter</kbd> open
+  <kbd>↑↓</kbd> navigate &nbsp; <kbd>Enter</kbd> open &nbsp; <kbd>Dbl-click</kbd> description to rename
 </div>
 
 <script>
@@ -105,6 +105,20 @@ function setupDetailedAP() {
     .then(r => r.json())
     .then(d => {
       if (d.ok) { alert(d.message); location.reload(); }
+      else alert('Error: ' + d.error);
+    })
+    .catch(e => alert('Error: ' + e));
+}
+
+function renameReport(rid, el) {
+  const cur = el.textContent.trim();
+  const val = prompt('Report description:', cur);
+  if (val === null || val.trim() === '' || val.trim() === cur) return;
+  fetch('/api/report/' + rid + '/description', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({description: val.trim()})})
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) { el.textContent = val.trim(); }
       else alert('Error: ' + d.error);
     })
     .catch(e => alert('Error: ' + e));

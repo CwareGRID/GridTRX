@@ -8,9 +8,10 @@ Usage:
     pip install mcp
     python mcp_server.py          # stdio transport (for Claude Desktop / Claude Code)
 """
-import sys, os
+import sys, os, csv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from datetime import datetime, timedelta
 from mcp.server.fastmcp import FastMCP
 import models
 
@@ -357,6 +358,378 @@ def delete_rule(db_path: str, rule_id: int) -> dict:
     _init(db_path)
     models.delete_import_rule(rule_id)
     return {"deleted": True, "rule_id": rule_id}
+
+
+@mcp.tool()
+def import_csv(db_path: str, csv_path: str, bank_account: str) -> dict:
+    """Import a bank CSV file into the books. Applies import rules to auto-categorize.
+
+    CSV format: Date, Description, Amount (or Date, Description, Debit, Credit).
+    Also handles multi-column bank exports (auto-detects columns).
+    Positive amounts = deposits, negative = payments.
+    Unmatched rows go to EX.SUSP (suspense). Review with get_ledger('EX.SUSP').
+    """
+    _init(db_path)
+
+    csv_path = os.path.expanduser(csv_path)
+    if not os.path.exists(csv_path):
+        raise ValueError(f"File not found: {csv_path}")
+
+    bank_acct = models.get_account_by_name(bank_account)
+    if not bank_acct:
+        raise ValueError(f"Bank account not found: {bank_account}")
+
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        rows_raw = list(reader)
+
+    if not rows_raw:
+        raise ValueError("Empty CSV file")
+
+    has_header, data_rows, csv_repairs = _normalize_csv(rows_raw)
+
+    if not data_rows:
+        raise ValueError("No data rows in CSV (only a header)")
+
+    posted = 0
+    skipped = 0
+    suspense = 0
+    errors = []
+    lock = models.get_meta("lock_date", "")
+
+    for row_num, row in enumerate(data_rows, start=2 if has_header else 1):
+        if len(row) < 3:
+            errors.append({"row": row_num, "reason": "Too few columns"})
+            skipped += 1
+            continue
+
+        row_date = row[0].strip()
+        row_desc = row[1].strip()
+
+        if not row_desc:
+            errors.append({"row": row_num, "reason": "Missing description"})
+            skipped += 1
+            continue
+
+        row_date = _normalize_date(row_date)
+        if not row_date:
+            errors.append({"row": row_num, "reason": f"Bad date '{row[0].strip()}'"})
+            skipped += 1
+            continue
+
+        if lock and row_date <= lock:
+            errors.append({"row": row_num, "reason": f"Before lock date {lock}"})
+            skipped += 1
+            continue
+
+        # Parse amount
+        if len(row) >= 4 and (row[2].strip() or row[3].strip()):
+            try:
+                dr = models.parse_amount(row[2]) if row[2].strip() else 0
+                cr = models.parse_amount(row[3]) if row[3].strip() else 0
+                amount_cents = dr - cr
+            except Exception:
+                errors.append({"row": row_num, "reason": f"Bad amount '{row[2].strip()}/{row[3].strip()}'"})
+                skipped += 1
+                continue
+        else:
+            try:
+                amount_cents = models.parse_amount(row[2])
+            except Exception:
+                errors.append({"row": row_num, "reason": f"Bad amount '{row[2].strip()}'"})
+                skipped += 1
+                continue
+
+        if amount_cents == 0:
+            errors.append({"row": row_num, "reason": "Zero amount"})
+            skipped += 1
+            continue
+
+        matched_acct, tax_code, tax_info = models.apply_rules(row_desc, amount_cents)
+
+        target_acct = models.get_account_by_name(matched_acct)
+        if not target_acct:
+            errors.append({"row": row_num, "reason": f"Account '{matched_acct}' not found"})
+            skipped += 1
+            continue
+
+        if matched_acct == "EX.SUSP":
+            suspense += 1
+
+        try:
+            if tax_info and tax_info.get("tax"):
+                tax_acct = models.get_account_by_name(tax_info["tax_acct"])
+                if not tax_acct:
+                    models.add_simple_transaction(
+                        row_date, "", row_desc,
+                        target_acct["id"] if amount_cents < 0 else bank_acct["id"],
+                        bank_acct["id"] if amount_cents < 0 else target_acct["id"],
+                        abs(amount_cents),
+                    )
+                else:
+                    net = tax_info["net"]
+                    tax = tax_info["tax"]
+                    if amount_cents < 0:
+                        txn_lines = [
+                            (target_acct["id"], net, row_desc),
+                            (tax_acct["id"], tax, f"{tax_code} on {row_desc[:30]}"),
+                            (bank_acct["id"], -(net + tax), row_desc),
+                        ]
+                    else:
+                        txn_lines = [
+                            (bank_acct["id"], net + tax, row_desc),
+                            (target_acct["id"], -net, row_desc),
+                            (tax_acct["id"], -tax, f"{tax_code} on {row_desc[:30]}"),
+                        ]
+                    models.add_transaction(row_date, "", row_desc, txn_lines)
+            else:
+                if amount_cents < 0:
+                    models.add_simple_transaction(
+                        row_date, "", row_desc,
+                        target_acct["id"], bank_acct["id"], abs(amount_cents),
+                    )
+                else:
+                    models.add_simple_transaction(
+                        row_date, "", row_desc,
+                        bank_acct["id"], target_acct["id"], abs(amount_cents),
+                    )
+            posted += 1
+        except ValueError as e:
+            errors.append({"row": row_num, "reason": str(e)})
+            skipped += 1
+
+    result = {
+        "rows_processed": len(data_rows),
+        "posted": posted,
+        "skipped": skipped,
+        "to_suspense": suspense,
+    }
+    if csv_repairs:
+        result["rows_repaired"] = len(csv_repairs)
+    if errors:
+        result["errors"] = errors[:20]
+    return result
+
+
+@mcp.tool()
+def year_end(db_path: str, ye_date: str) -> dict:
+    """Year-end rollover. Posts closing RE offset entry and sets lock date.
+
+    Reads the Retained Earnings total from the BS report as of ye_date.
+    Posts: Dr RE.OFS / Cr RE.OPEN for that amount (dated first day of new FY).
+    Then sets the lock date to ye_date. This is a one-way operation.
+
+    ye_date: fiscal year end date in YYYY-MM-DD format (e.g. '2025-12-31').
+    """
+    _init(db_path)
+
+    ye_date = _normalize_date(ye_date)
+    if not ye_date:
+        raise ValueError("Invalid date. Use YYYY-MM-DD format.")
+
+    ye_dt = datetime.strptime(ye_date, "%Y-%m-%d")
+    new_fy_start = (ye_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    bs_report = models.find_report_by_name("BS")
+    if not bs_report:
+        raise ValueError("No BS (Balance Sheet) report found. Year-end requires a BS report.")
+
+    display_items = models.get_report_items(bs_report["id"])
+    all_items = models.get_all_report_items()
+    data = models.compute_report_column(
+        bs_report["id"], date_to=ye_date,
+        _display_items=display_items, _all_items=all_items,
+    )
+
+    re_balance = None
+    for item, balance in data:
+        if item.get("acct_name") == "RE":
+            re_balance = balance
+            break
+
+    if re_balance is None:
+        raise ValueError("RE (Retained Earnings) total not found in BS report.")
+
+    if re_balance == 0:
+        return {"message": "Retained Earnings balance is zero — nothing to roll over."}
+
+    re_acct = models.get_account_by_name("RE")
+    if re_acct:
+        sign = 1 if re_acct["normal_balance"] == "D" else -1
+        raw_re = re_balance * sign
+    else:
+        raw_re = -re_balance
+
+    re_open = models.get_account_by_name("RE.OPEN")
+    re_ofs_acct = models.get_account_by_name("RE.OFS")
+
+    if not re_open:
+        raise ValueError("RE.OPEN account not found in chart of accounts.")
+
+    if not re_ofs_acct:
+        re_ofs_id = models.add_account("RE.OFS", "D", "Annual Opening RE Offset", "posting")
+        re_ofs_acct = models.get_account(re_ofs_id)
+        ofs_report = models.find_report_by_name("RE.OFS")
+        if ofs_report:
+            models.add_report_item(
+                ofs_report["id"], "account", "Annual Opening RE Offset",
+                re_ofs_acct["id"], indent=1, total_to_1="RE",
+            )
+
+    fy_year = ye_dt.strftime("%Y")
+    desc = f"{fy_year} Closing RE"
+
+    ofs_raw = -raw_re
+    open_raw = raw_re
+
+    lines = [
+        (re_ofs_acct["id"], ofs_raw, desc),
+        (re_open["id"], open_raw, desc),
+    ]
+    txn_id = models.add_transaction(new_fy_start, "YE-OFS", desc, lines)
+
+    models.set_meta("lock_date", ye_date)
+
+    new_fy_year = (ye_dt + timedelta(days=1)).strftime("%Y")
+    models.set_meta("fiscal_year", new_fy_year)
+
+    return {
+        "txn_id": txn_id,
+        "ye_date": ye_date,
+        "posting_date": new_fy_start,
+        "description": desc,
+        "retained_earnings_cents": re_balance,
+        "retained_earnings_formatted": models.fmt_amount(re_balance),
+        "lock_date_set": ye_date,
+    }
+
+
+@mcp.tool()
+def set_lock_date(db_path: str, lock_date: str = "") -> dict:
+    """Show or set the lock date. Transactions on or before the lock date cannot be posted, edited, or deleted.
+
+    If lock_date is provided (YYYY-MM-DD), sets it. If omitted, returns the current lock date.
+    """
+    _init(db_path)
+
+    if lock_date:
+        normalized = _normalize_date(lock_date)
+        if not normalized:
+            raise ValueError(f"Invalid date: '{lock_date}'. Use YYYY-MM-DD format.")
+        models.set_meta("lock_date", normalized)
+        return {"lock_date": normalized, "message": f"Lock date set to {normalized}"}
+    else:
+        current = models.get_meta("lock_date", "")
+        return {"lock_date": current or None}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HELPERS (CSV import)
+# ═══════════════════════════════════════════════════════════════════
+
+def _normalize_date(s):
+    """Try to normalize a date string to YYYY-MM-DD."""
+    s = s.strip()
+    if not s:
+        return None
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return s
+    for fmt_str in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d",
+                    "%m-%d-%Y", "%d-%m-%Y", "%b %d, %Y", "%B %d, %Y",
+                    "%m/%d/%y", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(s, fmt_str)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_csv(rows_raw):
+    """Pre-process CSV: detect format, repair rows with extra fields, normalize.
+
+    Handles:
+      1. Standard Grid format (3-4 columns) — repairs rows with extra commas
+      2. Multi-column bank CSVs (5+ columns) — auto-detects date/desc/amount
+      3. Rows with extra fields from unquoted commas in descriptions
+
+    Returns (has_header, data_rows, repairs).
+    """
+    if not rows_raw:
+        return False, [], []
+
+    first_row = rows_raw[0]
+    header = [h.strip().lower() for h in first_row]
+    has_header = any(kw in " ".join(header) for kw in
+                     ["date", "description", "amount", "debit", "credit"])
+    start = 1 if has_header else 0
+    data_rows = [list(r) for r in rows_raw[start:]]
+    expected = len(first_row)
+    repairs = []
+
+    if has_header and expected > 4:
+        date_col = None
+        amt_cols = []
+        desc_cols = []
+
+        for i, h in enumerate(header):
+            if "date" in h and date_col is None:
+                date_col = i
+            elif "$" in h or h in ("amount", "debit", "credit"):
+                amt_cols.append(i)
+            elif any(kw in h for kw in ["description", "desc", "memo",
+                                        "payee", "detail", "narrative"]):
+                desc_cols.append(i)
+
+        if date_col is None or not amt_cols:
+            return has_header, data_rows, repairs
+
+        normalized = []
+        for idx, row in enumerate(data_rows):
+            n = len(row)
+            row_num = idx + start + 1
+            date_val = row[date_col].strip() if date_col < n else ""
+
+            if n > expected:
+                amt_start = n - len(amt_cols)
+                desc_parts = [row[i].strip() for i in range(date_col + 1, amt_start) if row[i].strip()]
+                amt_val = ""
+                for v in row[amt_start:]:
+                    v = v.strip()
+                    if v:
+                        amt_val = v
+                        break
+                extra = n - expected
+                desc_joined = ": ".join(desc_parts)
+                repairs.append((row_num, extra, desc_joined[:50]))
+            else:
+                desc_parts = [row[c].strip() for c in desc_cols if c < n and row[c].strip()]
+                amt_val = ""
+                for c in amt_cols:
+                    if c < n and row[c].strip():
+                        amt_val = row[c].strip()
+                        break
+                desc_joined = ": ".join(desc_parts)
+
+            normalized.append([date_val, desc_joined, amt_val])
+
+        return has_header, normalized, repairs
+
+    for i, row in enumerate(data_rows):
+        if len(row) > expected:
+            row_num = i + start + 1
+            extra = len(row) - expected
+            amt_count = expected - 2
+
+            date_val = row[0]
+            desc_fields = row[1 : len(row) - amt_count]
+            amt_fields = row[len(row) - amt_count:]
+
+            merged = ", ".join(f.strip() for f in desc_fields)
+            data_rows[i] = [date_val, merged] + amt_fields
+            repairs.append((row_num, extra, merged[:50]))
+
+    return has_header, data_rows, repairs
 
 
 if __name__ == "__main__":

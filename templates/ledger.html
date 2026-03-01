@@ -113,6 +113,9 @@
   <a href="{{ url_for('export_ledger', account_id=account.id) }}" class="btn btn-sm">CSV</a>
   <a href="/reconcile/{{ account.id }}{% if parent_report %}?from_report={{ parent_report.id }}{% endif %}" class="btn btn-sm">Reconcile</a>
   <button class="btn btn-sm" onclick="window.print()">Print</button>
+  {% if parent_report and parent_report.name == 'AJE' %}
+  <a href="/reports/aje?begin={{ date_from }}&end={{ date_to }}" class="btn btn-sm" target="_blank">Print AJE</a>
+  {% endif %}
 </div>
 
 <div style="overflow-y:auto; max-height:calc(100vh - 200px);" id="scroll-wrap">
